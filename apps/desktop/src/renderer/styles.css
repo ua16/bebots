@@ -1,4 +1,89 @@
 .app-main {
   font-family: system-ui, sans-serif;
   padding: 2rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.bot-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+
+.bot-list {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.bot-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.bot-list li {
+  margin-bottom: 0.5rem;
+}
+
+.bot-list button {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  background: #f7f7f7;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bot-list button.selected {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+
+.bot-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.bot-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 500;
+}
+
+.bot-editor input,
+.bot-editor textarea {
+  padding: 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.bot-editor textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.actions button {
+  padding: 0.5rem 1rem;
+  border: 1px solid #ccc;
+  background: #f7f7f7;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.error {
+  color: #dc2626;
 }

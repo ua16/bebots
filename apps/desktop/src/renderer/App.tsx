@@ -16,8 +16,13 @@ export function App() {
   const [description, setDescription] = useState("");
   const [persona, setPersona] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [runResult, setRunResult] = useState<string | null>(null);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
 
-  const api = window.bebots?.bots;
+  const bebots = window.bebots;
+  const api = bebots?.bots;
 
   const refresh = async () => {
     if (!api) return;
@@ -31,6 +36,9 @@ export function App() {
 
   useEffect(() => {
     setPlatform(window.bebots?.platform ?? "unavailable");
+    if (window.bebots?.workspace) {
+      void window.bebots.workspace.getRoot().then(setWorkspaceRoot).catch(() => {});
+    }
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -84,11 +92,27 @@ export function App() {
     }
   };
 
+  const handleRun = async () => {
+    if (!api || !selectedId) return;
+    setError(null);
+    setRunStatus("running");
+    try {
+      const run = await bebots!.runs.start({ botId: selectedId, prompt: prompt || "Hello" });
+      const final = await bebots!.runs.await(run.id, 120000);
+      setRunStatus(final?.status ?? run.status);
+      setRunResult(final?.summary ?? null);
+    } catch (e) {
+      setError(String(e));
+      setRunStatus("failed");
+    }
+  };
+
   return (
     <main className="app-main">
       <h1>bebots</h1>
       <p>Local-first multi-bot agent hub</p>
       <p>Platform: {platform}</p>
+      {workspaceRoot && <p>Bots home: {workspaceRoot}</p>}
 
       <section className="bot-layout">
         <aside className="bot-list">
@@ -135,6 +159,15 @@ export function App() {
                 <button type="button" onClick={handleArchive}>
                   Archive
                 </button>
+                <label>
+                  Prompt
+                  <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+                </label>
+                <button type="button" onClick={handleRun}>
+                  Run
+                </button>
+                {runStatus && <p>Run: {runStatus}</p>}
+                {runResult && <pre style={{ whiteSpace: "pre-wrap" }}>{runResult}</pre>}
               </>
             ) : (
               <button type="button" onClick={handleCreate}>

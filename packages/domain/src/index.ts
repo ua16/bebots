@@ -1,11 +1,3 @@
-/**
- * Domain primitives for bebots.
- *
- * This package owns domain types, branded IDs, and state-transition
- * rules. It must not depend on application, persistence, HTTP, Electron,
- * or any runtime adapter.
- */
-
 export type BotId = string & { readonly __brand: "BotId" };
 
 export function asBotId(value: string): BotId {
@@ -23,6 +15,47 @@ export interface Bot {
   readonly description: string;
   readonly persona: string;
   readonly status: BotStatus;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export type RunId = string & { readonly __brand: "RunId" };
+
+export function asRunId(value: string): RunId {
+  if (value.trim().length === 0) {
+    throw new Error("RunId cannot be empty");
+  }
+  return value as RunId;
+}
+
+export const RUN_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const RUN_TRIGGERS = ["manual", "schedule", "message", "task", "api"] as const;
+
+export type RunTrigger = (typeof RUN_TRIGGERS)[number];
+
+export interface Run {
+  readonly id: RunId;
+  readonly botId: BotId;
+  readonly triggerType: RunTrigger;
+  readonly prompt: string;
+  readonly status: RunStatus;
+  readonly sessionId?: string;
+  readonly timeoutMs: number;
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly exitCode?: number;
+  readonly summary?: string;
+  readonly error?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

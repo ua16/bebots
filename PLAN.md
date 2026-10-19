@@ -608,13 +608,13 @@ and each bot receives a stable ID and isolated home directory.
 
 ### Milestone 2 --- One runtime, one complete run lifecycle
 
-- [ ] Implement the OpenCode runtime adapter.
-- [ ] Launch a run with a chosen bot, using its home directory as the
+- [x] Implement the OpenCode runtime adapter.
+- [x] Launch a run with a chosen bot, using its home directory as the
       working directory and its stored session if resumable.
-- [ ] Stream or collect output and persist run events.
-- [ ] Support cancellation, timeout, exit/error handling, and process
+- [x] Stream or collect output and persist run events.
+- [x] Support cancellation, timeout, exit/error handling, and process
       cleanup.
-- [ ] Expose run creation and status through the local API.
+- [x] Expose run creation and status through the local API.
 
 **Done when:** a user can trigger a run from the UI and API, observe
 progress, cancel it, and inspect the persisted final result after

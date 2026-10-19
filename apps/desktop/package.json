@@ -18,7 +18,8 @@
     "react-dom": "^18.3.0",
     "@bebots/application": "workspace:*",
     "@bebots/persistence": "workspace:*",
-    "sql.js": "^1.15.1"
+    "sql.js": "^1.15.1",
+    "@bebots/runtime-opencode": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

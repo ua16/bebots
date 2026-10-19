@@ -191,4 +191,46 @@ describe("main entry", () => {
     handlers["window-all-closed"]?.();
     expect(quit).not.toHaveBeenCalled();
   });
+
+  it("applies the strict CSP in production mode", async () => {
+    let cspCallback: ((details: unknown, cb: (res: unknown) => void) => void) | undefined;
+    const onHeadersReceived = vi.fn(
+      (cb: (details: unknown, cb2: (res: unknown) => void) => void) => {
+        cspCallback = cb;
+      },
+    );
+    const BrowserWindow = vi.fn().mockImplementation(() => ({
+      on: vi.fn(),
+      loadURL: vi.fn(),
+      loadFile: vi.fn(),
+      show: vi.fn(),
+    }));
+    (BrowserWindow as unknown as { getAllWindows: () => unknown[] }).getAllWindows = vi.fn(
+      () => [],
+    );
+
+    vi.doMock("electron", () => ({
+      app: {
+        isPackaged: true,
+        whenReady: vi.fn(() => Promise.resolve()),
+        on: vi.fn(),
+        quit: vi.fn(),
+      },
+      BrowserWindow,
+      session: { defaultSession: { webRequest: { onHeadersReceived } } },
+    }));
+
+    delete process.env.ELECTRON_RENDERER_URL;
+    await import("./index");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const cb = vi.fn();
+    cspCallback?.({ responseHeaders: {} }, cb);
+    const result = cb.mock.calls[0]![0] as {
+      responseHeaders: Record<string, string[]>;
+    };
+    const csp = result.responseHeaders["Content-Security-Policy"]![0]!;
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).not.toContain("unsafe-inline");
+  });
 });

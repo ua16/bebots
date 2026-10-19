@@ -5,13 +5,29 @@
     "outDir": "./dist",
     "rootDir": ".",
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src", "electron.vite.config.ts"],
+  "include": [
+    "src",
+    "electron.vite.config.ts"
+  ],
   "references": [
-    { "path": "../../packages/domain" },
-    { "path": "../../packages/shared" },
-    { "path": "../../packages/application" },
-    { "path": "../../packages/persistence" }
+    {
+      "path": "../../packages/domain"
+    },
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../../packages/application"
+    },
+    {
+      "path": "../../packages/persistence"
+    },
+    {
+      "path": "../../packages/runtime-opencode"
+    }
   ]
 }

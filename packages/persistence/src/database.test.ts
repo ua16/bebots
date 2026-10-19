@@ -59,4 +59,19 @@ describe("openDatabase", () => {
     expect(currentSchemaVersion(db)).toBeGreaterThanOrEqual(2);
     db.close();
   });
+
+  it("reports version 0 when the migration table is absent", async () => {
+    const db = await openDatabase(dbPath);
+    expect(currentSchemaVersion(db)).toBe(0);
+    db.close();
+  });
+
+  it("reports version 0 when no migrations have been applied", async () => {
+    const db = await openDatabase(dbPath);
+    db.exec(
+      "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
+    );
+    expect(currentSchemaVersion(db)).toBe(0);
+    db.close();
+  });
 });

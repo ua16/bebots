@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asBotId, canTransitionTask, canTransitionApproval } from "./index";
+import { asBotId, asRunId, canTransitionTask, canTransitionApproval } from "./index";
 
 describe("asBotId", () => {
   it("accepts a non-empty value", () => {
@@ -48,5 +48,20 @@ describe("approval transitions", () => {
 
   it("rejects approved -> pending", () => {
     expect(canTransitionApproval("approved", "pending")).toBe(false);
+  });
+});
+
+
+describe("asRunId", () => {
+  it("accepts a non-empty value", () => {
+    expect(asRunId("run-1")).toBe("run-1");
+  });
+
+  it("rejects an empty value", () => {
+    expect(() => asRunId("")).toThrow();
+  });
+
+  it("rejects a whitespace-only value", () => {
+    expect(() => asRunId("   ")).toThrow();
   });
 });

@@ -33,6 +33,41 @@ const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    name: "create_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL,
+        session_id TEXT,
+        timeout_ms INTEGER NOT NULL,
+        started_at INTEGER,
+        ended_at INTEGER,
+        exit_code INTEGER,
+        summary TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `,
+  },
+  {
+    version: 4,
+    name: "create_run_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS run_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {

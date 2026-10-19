@@ -7,6 +7,9 @@ const api: BebotsPreloadApi = {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
   },
+  workspace: {
+    getRoot: () => ipcRenderer.invoke("bebots:workspace:root") as Promise<string>,
+  },
   bots: {
     list: (includeArchived) =>
       ipcRenderer.invoke("bebots:bots:list", includeArchived) as Promise<
@@ -16,6 +19,14 @@ const api: BebotsPreloadApi = {
     create: (input) => ipcRenderer.invoke("bebots:bots:create", input),
     update: (id, input) => ipcRenderer.invoke("bebots:bots:update", id, input),
     archive: (id) => ipcRenderer.invoke("bebots:bots:archive", id),
+  },
+  runs: {
+    start: (input) => ipcRenderer.invoke("bebots:runs:start", input),
+    get: (id) => ipcRenderer.invoke("bebots:runs:get", id),
+    list: (options) => ipcRenderer.invoke("bebots:runs:list", options),
+    cancel: (id) => ipcRenderer.invoke("bebots:runs:cancel", id),
+    events: (id) => ipcRenderer.invoke("bebots:runs:events", id),
+    await: (id, timeoutMs) => ipcRenderer.invoke("bebots:runs:await", id, timeoutMs),
   },
 };
 
