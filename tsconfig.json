@@ -1,9 +1,20 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/domain" },
-    { "path": "./packages/shared" },
-    { "path": "./packages/application" },
-    { "path": "./apps/desktop" }
+    {
+      "path": "./packages/domain"
+    },
+    {
+      "path": "./packages/shared"
+    },
+    {
+      "path": "./packages/application"
+    },
+    {
+      "path": "./apps/desktop"
+    },
+    {
+      "path": "./packages/persistence"
+    }
   ]
 }

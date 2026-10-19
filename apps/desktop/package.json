@@ -16,7 +16,9 @@
     "effect": "^4.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "@bebots/application": "workspace:*"
+    "@bebots/application": "workspace:*",
+    "@bebots/persistence": "workspace:*",
+    "sql.js": "^1.15.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

@@ -4,7 +4,12 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: ["@bebots/domain", "@bebots/shared", "@bebots/application", "@bebots/persistence"],
+        include: ["sql.js"],
+      }),
+    ],
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/main/index.ts"),
@@ -12,7 +17,12 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: ["@bebots/domain", "@bebots/shared", "@bebots/application", "@bebots/persistence"],
+        include: ["sql.js"],
+      }),
+    ],
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/preload/index.ts"),

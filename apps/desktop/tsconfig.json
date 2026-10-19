@@ -11,6 +11,7 @@
   "references": [
     { "path": "../../packages/domain" },
     { "path": "../../packages/shared" },
-    { "path": "../../packages/application" }
+    { "path": "../../packages/application" },
+    { "path": "../../packages/persistence" }
   ]
 }

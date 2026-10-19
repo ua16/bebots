@@ -597,11 +597,11 @@ Node access, and CI runs typecheck, lint, and tests.
 
 ### Milestone 1 --- Persistent bot directory
 
-- [ ] Add SQLite and versioned migrations.
-- [ ] Implement bot CRUD and domain validation.
-- [ ] Create and manage bot home directories.
-- [ ] Add profile/persona editor and bot list/detail UI.
-- [ ] Add repository tests and restart persistence tests.
+- [x] Add SQLite and versioned migrations.
+- [x] Implement bot CRUD and domain validation.
+- [x] Create and manage bot home directories.
+- [x] Add profile/persona editor and bot list/detail UI.
+- [x] Add repository tests and restart persistence tests.
 
 **Done when:** creating and editing a bot persists across app restarts,
 and each bot receives a stable ID and isolated home directory.
