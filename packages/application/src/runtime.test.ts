@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
-import type { AgentRuntime, RunRequest, RunHandle, RuntimeEvent, RunResult } from "./index";
+import type {
+  AgentRuntime,
+  RunRequest,
+  RunHandle,
+  RuntimeEvent,
+  RunResult,
+  RuntimeError,
+} from "./index";
 
 describe("runtime contract", () => {
   it("loads the runtime module", async () => {
@@ -18,7 +25,8 @@ describe("runtime contract", () => {
       capabilities: { streaming: false, resumableSessions: false, cancellation: false },
       startRun: (_request: RunRequest) => Effect.succeed({ runId: "r1" } as RunHandle),
       cancelRun: (_handle: RunHandle) => Effect.void,
-      streamEvents: (_handle: RunHandle) => Stream.empty as Stream.Stream<RuntimeEvent, never>,
+      streamEvents: (_handle: RunHandle) =>
+        Stream.empty as Stream.Stream<RuntimeEvent, RuntimeError>,
       getResult: (_handle: RunHandle) =>
         Effect.succeed({ exitCode: 0, summary: "ok" } as RunResult),
     };

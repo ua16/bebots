@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, expect, it, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
 
 describe("main entry", () => {
   it("renders the app into #root", async () => {
@@ -9,8 +10,9 @@ describe("main entry", () => {
     root.id = "root";
     document.body.appendChild(root);
     await import("./main");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(root.querySelector("h1")?.textContent).toBe("bebots");
+    await waitFor(() => {
+      expect(root.querySelector("h1")?.textContent).toBe("bebots");
+    });
   });
 
   it("throws when #root is missing", async () => {
