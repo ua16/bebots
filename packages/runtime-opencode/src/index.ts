@@ -74,7 +74,10 @@ export class OpenCodeRuntime implements AgentRuntime {
       let password = "";
       let url = "";
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Timed out starting opencode server")), 30_000);
+        const timeout = setTimeout(
+          () => reject(new Error("Timed out starting opencode server")),
+          30_000,
+        );
         const onData = (chunk: Buffer) => {
           stdout += chunk.toString("utf8");
           const urlMatch = stdout.match(/server listening on (http:\/\/[^\s]+)/);
@@ -142,7 +145,9 @@ export class OpenCodeRuntime implements AgentRuntime {
     }
     if (res.status === 204) return undefined as T;
     const json = (await res.json()) as { data?: T };
-    return (json && typeof json === "object" && "data" in json ? (json as { data: T }).data : (json as T));
+    return json && typeof json === "object" && "data" in json
+      ? (json as { data: T }).data
+      : (json as T);
   }
 
   private notify(state: RunState): void {
@@ -158,14 +163,15 @@ export class OpenCodeRuntime implements AgentRuntime {
         const server = await self.ensureServer();
         const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-        // Resolve or create session.
+        // Resolve or create session. When the stored runtime session is gone
+        // (expired/purged), start a genuinely NEW session transparently —
+        // never re-create the old id (PLAN §6.4).
         let sessionId: string | undefined = request.sessionId;
         if (sessionId) {
           try {
             await self.request(server, "GET", `/api/session/${sessionId}`);
-          } catch { /* ignore */
+          } catch {
             const created = await self.request<{ id: string }>(server, "POST", "/api/session", {
-              id: sessionId,
               title: "bebots run",
               location: { directory: request.workingDirectory },
             });
@@ -190,6 +196,21 @@ export class OpenCodeRuntime implements AgentRuntime {
         this.runs.set(runId, state);
         this.notify(state);
 
+        // Snapshot the messages already in the session BEFORE prompting. On a
+        // resumed session this run must only report its own messages — the
+        // first assistant reply in the whole history belongs to the original
+        // run (found via #20's diagnosis: every resumed run re-answered with
+        // the first reply the session ever produced).
+        const priorMessages = await self.request<unknown[]>(
+          server,
+          "GET",
+          `/api/session/${sessionId}/message`,
+        );
+        const prior = Array.isArray(priorMessages)
+          ? priorMessages
+          : ((priorMessages as { data?: unknown[] })?.data ?? []);
+        const priorIds = new Set(prior.map((m) => String((m as { id?: unknown })?.id)));
+
         // Send prompt.
         await self.request(server, "POST", `/api/session/${sessionId}/prompt`, {
           text: request.prompt,
@@ -207,12 +228,25 @@ export class OpenCodeRuntime implements AgentRuntime {
                 "GET",
                 `/api/session/${sessionId}/message`,
               );
-              const list = Array.isArray(msgs) ? msgs : (msgs as { data?: unknown[] })?.data ?? [];
-              // Emit assistant text outputs as progress if new? We'll emit final at completion.
-              const idle = (list as any[]).find((m: any) => m?.type === "idle");
+              const list = Array.isArray(msgs)
+                ? msgs
+                : ((msgs as { data?: unknown[] })?.data ?? []);
+              // Only this run's messages: everything already in the session
+              // before the prompt belongs to earlier runs (issue #21) — the
+              // first assistant reply in session history is the original
+              // run's, not this run's.
+              const fresh = (list as any[]).filter((m: any) => !priorIds.has(String(m?.id)));
+              const idle = fresh.find((m: any) => m?.type === "idle");
               if (idle) {
-                const assistant = (list as any[]).find((m: any) => m?.type === "assistant");
-                const text = assistant?.content?.map((c: any) => c?.text).filter(Boolean).join("\n") ?? "";
+                const assistant = fresh.find((m: any) => m?.type === "assistant");
+                // Only the assistant's actual text — reasoning parts are
+                // internal model thoughts, not chat content.
+                const text =
+                  assistant?.content
+                    ?.filter((c: any) => c?.type === undefined || c?.type === "text")
+                    .map((c: any) => c?.text)
+                    .filter(Boolean)
+                    .join("\n") ?? "";
                 if (!state.cancelled) {
                   state.events.push({ _tag: "completed", summary: text });
                   state.result = {
@@ -229,8 +263,14 @@ export class OpenCodeRuntime implements AgentRuntime {
             if (state.cancelled) {
               // attempt interrupt
               try {
-                await self.request(server, "POST", `/api/session/${sessionId}/interrupt?resume=false`, {});
-              } catch { /* ignore */
+                await self.request(
+                  server,
+                  "POST",
+                  `/api/session/${sessionId}/interrupt?resume=false`,
+                  {},
+                );
+              } catch {
+                /* ignore */
               }
               state.events.push({ _tag: "failed", error: makeError("Cancelled") });
               state.result = { exitCode: 130, summary: "cancelled", sessionId };
@@ -240,8 +280,14 @@ export class OpenCodeRuntime implements AgentRuntime {
             }
             // timeout
             try {
-              await self.request(server, "POST", `/api/session/${sessionId}/interrupt?resume=false`, {});
-            } catch { /* ignore */
+              await self.request(
+                server,
+                "POST",
+                `/api/session/${sessionId}/interrupt?resume=false`,
+                {},
+              );
+            } catch {
+              /* ignore */
             }
             state.events.push({ _tag: "failed", error: makeError("Timed out") });
             state.result = { exitCode: 124, summary: "timed out", sessionId };
@@ -273,8 +319,14 @@ export class OpenCodeRuntime implements AgentRuntime {
         if (state.sessionId) {
           const server = await self.ensureServer();
           try {
-            await self.request(server, "POST", `/api/session/${state.sessionId}/interrupt?resume=false`, {});
-          } catch { /* ignore */
+            await self.request(
+              server,
+              "POST",
+              `/api/session/${state.sessionId}/interrupt?resume=false`,
+              {},
+            );
+          } catch {
+            /* ignore */
           }
         }
         self.notify(state);
@@ -301,7 +353,10 @@ export class OpenCodeRuntime implements AgentRuntime {
         });
       }
     }
-    return Stream.fromAsyncIterable(gen(), (e: unknown) => e as RuntimeError) as Stream.Stream<RuntimeEvent, RuntimeError>;
+    return Stream.fromAsyncIterable(gen(), (e: unknown) => e as RuntimeError) as Stream.Stream<
+      RuntimeEvent,
+      RuntimeError
+    >;
   }
 
   getResult(handle: RunHandle): Effect.Effect<RunResult, RuntimeError> {
@@ -318,7 +373,10 @@ export class OpenCodeRuntime implements AgentRuntime {
         }
         return runState.result!;
       },
-      catch: (cause: unknown) => (cause as RuntimeError)?._tag === "RuntimeError" ? (cause as RuntimeError) : makeError("Failed to get result", cause),
+      catch: (cause: unknown) =>
+        (cause as RuntimeError)?._tag === "RuntimeError"
+          ? (cause as RuntimeError)
+          : makeError("Failed to get result", cause),
     });
   }
   close(): void {
@@ -331,7 +389,6 @@ export class OpenCodeRuntime implements AgentRuntime {
       this.server = null;
     }
   }
-
 }
 
 export function createOpenCodeRuntime(options?: OpenCodeRuntimeOptions): OpenCodeRuntime {

@@ -1,5 +1,12 @@
 import { Effect } from "effect";
-import type { BotId, Run, RunId, RunStatus } from "@bebots/domain";
+import type {
+  BotId,
+  Run,
+  RunId,
+  RunStatus,
+  ConversationId,
+  ConversationSessionId,
+} from "@bebots/domain";
 import { asBotId, asRunId } from "@bebots/domain";
 import type { RunRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
@@ -18,6 +25,8 @@ interface RunRow {
   exit_code: number | null;
   summary: string | null;
   error: string | null;
+  conversation_id: string | null;
+  conversation_session_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -36,6 +45,10 @@ function rowToRun(row: RunRow): Run {
     exitCode: row.exit_code ?? undefined,
     summary: row.summary ?? undefined,
     error: row.error ?? undefined,
+    conversationId: row.conversation_id ? (row.conversation_id as ConversationId) : undefined,
+    conversationSessionId: row.conversation_session_id
+      ? (row.conversation_session_id as ConversationSessionId)
+      : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   } as Run;
@@ -53,8 +66,8 @@ export class SqliteRunRepository implements RunRepository {
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, conversation_id, conversation_session_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           run.id,
           run.botId,
@@ -68,6 +81,8 @@ export class SqliteRunRepository implements RunRepository {
           run.exitCode ?? null,
           run.summary ?? null,
           run.error ?? null,
+          run.conversationId ?? null,
+          run.conversationSessionId ?? null,
           run.createdAt,
           run.updatedAt,
         );
@@ -124,7 +139,7 @@ export class SqliteRunRepository implements RunRepository {
           const info = db
             .prepare(
               `UPDATE runs
-               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, updated_at = ?
+               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, conversation_id = ?, conversation_session_id = ?, updated_at = ?
                WHERE id = ?`,
             )
             .run(
@@ -139,6 +154,8 @@ export class SqliteRunRepository implements RunRepository {
               run.exitCode ?? null,
               run.summary ?? null,
               run.error ?? null,
+              run.conversationId ?? null,
+              run.conversationSessionId ?? null,
               run.updatedAt,
               run.id,
             );
@@ -168,7 +185,9 @@ export class SqliteRunRepository implements RunRepository {
     });
   }
 
-  listEvents(runId: RunId): Effect.Effect<
+  listEvents(
+    runId: RunId,
+  ): Effect.Effect<
     readonly { readonly tag: string; readonly payload: unknown; readonly createdAt: number }[],
     RepositoryError
   > {
@@ -176,7 +195,9 @@ export class SqliteRunRepository implements RunRepository {
     return Effect.try({
       try: () => {
         const rows = db
-          .prepare("SELECT tag, payload, created_at FROM run_events WHERE run_id = ? ORDER BY id ASC")
+          .prepare(
+            "SELECT tag, payload, created_at FROM run_events WHERE run_id = ? ORDER BY id ASC",
+          )
           .all(runId) as unknown as { tag: string; payload: string; created_at: number }[];
         return rows.map((r) => ({
           tag: r.tag,

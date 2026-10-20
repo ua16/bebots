@@ -39,3 +39,12 @@ export class WorkspaceError extends Error {
     this.cause = cause;
   }
 }
+
+/** A service was constructed without a collaborator it needs at runtime. */
+export class ServiceError extends Error {
+  readonly _tag = "ServiceError";
+  constructor(message: string) {
+    super(message);
+    this.name = "ServiceError";
+  }
+}

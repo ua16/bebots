@@ -3,29 +3,64 @@ import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
 import { asBotId, asRunId } from "@bebots/domain";
 import { RunService, RunSupervisor } from "./run-service.js";
-import type { BotRepository, BotWorkspace, Clock, IdGenerator, RunRepository } from "./repositories.js";
-import type { AgentRuntime, RunHandle, RunRequest, RunResult, RuntimeError, RuntimeEvent } from "./runtime.js";
+import type {
+  BotRepository,
+  BotWorkspace,
+  Clock,
+  IdGenerator,
+  RunRepository,
+} from "./repositories.js";
+import type {
+  AgentRuntime,
+  RunHandle,
+  RunRequest,
+  RunResult,
+  RuntimeError,
+  RuntimeEvent,
+} from "./runtime.js";
 
 describe("RunService", () => {
   it("starts a run and completes", async () => {
     const store = new Map<string, any>();
     const events = new Map<string, any[]>();
     const runRepo: RunRepository = {
-      create: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      create: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       findById: (id) => Effect.succeed(store.get(id) ?? null),
       findAll: () => Effect.succeed([...store.values()]),
-      update: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      update: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       appendEvent: (runId, event) => {
         const arr = events.get(runId) ?? [];
         arr.push(event);
         events.set(runId, arr);
         return Effect.void;
       },
-      listEvents: (runId) => Effect.succeed((events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: Date.now() }))),
+      listEvents: (runId) =>
+        Effect.succeed(
+          (events.get(runId) ?? []).map((e) => ({
+            tag: e._tag,
+            payload: e,
+            createdAt: Date.now(),
+          })),
+        ),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
-      findById: (id) => Effect.succeed({ id, name: "Bot", description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 } as any),
+      findById: (id) =>
+        Effect.succeed({
+          id,
+          name: "Bot",
+          description: "",
+          persona: "",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        } as any),
       findAll: () => Effect.succeed([]),
       update: (b) => Effect.succeed(b),
       delete: () => Effect.void,
@@ -39,16 +74,24 @@ describe("RunService", () => {
     const runtime: AgentRuntime = {
       id: "fake",
       capabilities: { streaming: true, resumableSessions: true, cancellation: true },
-      startRun: (_req: RunRequest) => Effect.succeed({ runId: "rt-1", sessionId: "sess-1" } as RunHandle),
+      startRun: (_req: RunRequest) =>
+        Effect.succeed({ runId: "rt-1", sessionId: "sess-1" } as RunHandle),
       cancelRun: () => Effect.void,
-      streamEvents: () => Stream.fromIterable([{ _tag: "started", at: new Date() }, { _tag: "completed", summary: "done" }] as RuntimeEvent[]),
-      getResult: () => Effect.succeed({ exitCode: 0, summary: "done", sessionId: "sess-1" } as RunResult),
+      streamEvents: () =>
+        Stream.fromIterable([
+          { _tag: "started", at: new Date() },
+          { _tag: "completed", summary: "done" },
+        ] as RuntimeEvent[]),
+      getResult: () =>
+        Effect.succeed({ exitCode: 0, summary: "done", sessionId: "sess-1" } as RunResult),
     };
     const clock: Clock = { now: () => 100 };
     const ids: IdGenerator = { generate: () => "run-1" };
     const service = new RunService(runRepo, botRepo, workspace, runtime, clock, ids);
 
-    const run = await Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }));
+    const run = await Effect.runPromise(
+      service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
+    );
     expect(run.id).toBe("run-1");
     expect(run.status).toBe("running");
     // await completion
@@ -68,44 +111,137 @@ describe("RunService", () => {
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
-      findById: () => Effect.succeed({ id: asBotId("bot-1"), name: "Bot", description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 } as any),
+      findById: () =>
+        Effect.succeed({
+          id: asBotId("bot-1"),
+          name: "Bot",
+          description: "",
+          persona: "",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        } as any),
       findAll: () => Effect.succeed([]),
       update: (b) => Effect.succeed(b),
       delete: () => Effect.void,
     };
-    const workspace: BotWorkspace = { root: "/tmp", ensureHome: () => Effect.succeed("/tmp"), writePersona: () => Effect.void, homePath: () => "/tmp" };
-    const runtime: AgentRuntime = { id: "fake", capabilities: { streaming: false, resumableSessions: false, cancellation: false }, startRun: () => Effect.succeed({ runId: "r" } as RunHandle), cancelRun: () => Effect.void, streamEvents: () => Stream.empty as any, getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult) };
-    const service = new RunService({ runRepo, botRepo, workspace, runtime, clock: { now: () => 1 }, ids: { generate: () => "r1" } });
-    await expect(Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "  " }))).rejects.toThrow();
+    const workspace: BotWorkspace = {
+      root: "/tmp",
+      ensureHome: () => Effect.succeed("/tmp"),
+      writePersona: () => Effect.void,
+      homePath: () => "/tmp",
+    };
+    const runtime: AgentRuntime = {
+      id: "fake",
+      capabilities: { streaming: false, resumableSessions: false, cancellation: false },
+      startRun: () => Effect.succeed({ runId: "r" } as RunHandle),
+      cancelRun: () => Effect.void,
+      streamEvents: () => Stream.empty as any,
+      getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult),
+    };
+    const service = new RunService({
+      runRepo,
+      botRepo,
+      workspace,
+      runtime,
+      clock: { now: () => 1 },
+      ids: { generate: () => "r1" },
+    });
+    await expect(
+      Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "  " })),
+    ).rejects.toThrow();
   });
 
   it("bot not found", async () => {
-    const runRepo: RunRepository = { create: (r) => Effect.succeed(r), findById: () => Effect.succeed(null), findAll: () => Effect.succeed([]), update: (r) => Effect.succeed(r), appendEvent: () => Effect.void, listEvents: () => Effect.succeed([]) };
-    const botRepo: BotRepository = { create: (b) => Effect.succeed(b), findById: () => Effect.succeed(null), findAll: () => Effect.succeed([]), update: (b) => Effect.succeed(b), delete: () => Effect.void };
-    const workspace: BotWorkspace = { root: "/tmp", ensureHome: () => Effect.succeed("/tmp"), writePersona: () => Effect.void, homePath: () => "/tmp" };
-    const runtime: AgentRuntime = { id: "fake", capabilities: { streaming: false, resumableSessions: false, cancellation: false }, startRun: () => Effect.succeed({ runId: "r" } as RunHandle), cancelRun: () => Effect.void, streamEvents: () => Stream.empty as any, getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult) };
-    const service = new RunService(runRepo, botRepo, workspace, runtime, { now: () => 1 }, { generate: () => "r1" });
-    await expect(Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }))).rejects.toThrow();
+    const runRepo: RunRepository = {
+      create: (r) => Effect.succeed(r),
+      findById: () => Effect.succeed(null),
+      findAll: () => Effect.succeed([]),
+      update: (r) => Effect.succeed(r),
+      appendEvent: () => Effect.void,
+      listEvents: () => Effect.succeed([]),
+    };
+    const botRepo: BotRepository = {
+      create: (b) => Effect.succeed(b),
+      findById: () => Effect.succeed(null),
+      findAll: () => Effect.succeed([]),
+      update: (b) => Effect.succeed(b),
+      delete: () => Effect.void,
+    };
+    const workspace: BotWorkspace = {
+      root: "/tmp",
+      ensureHome: () => Effect.succeed("/tmp"),
+      writePersona: () => Effect.void,
+      homePath: () => "/tmp",
+    };
+    const runtime: AgentRuntime = {
+      id: "fake",
+      capabilities: { streaming: false, resumableSessions: false, cancellation: false },
+      startRun: () => Effect.succeed({ runId: "r" } as RunHandle),
+      cancelRun: () => Effect.void,
+      streamEvents: () => Stream.empty as any,
+      getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult),
+    };
+    const service = new RunService(
+      runRepo,
+      botRepo,
+      workspace,
+      runtime,
+      { now: () => 1 },
+      { generate: () => "r1" },
+    );
+    await expect(
+      Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" })),
+    ).rejects.toThrow();
   });
 
   it("cancel run", async () => {
     const store = new Map<string, any>();
     const runRepo: RunRepository = {
-      create: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      create: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       findById: (id) => Effect.succeed(store.get(id) ?? null),
       findAll: () => Effect.succeed([...store.values()]),
-      update: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      update: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
     };
-    const botRepo: BotRepository = { create: (b) => Effect.succeed(b), findById: () => Effect.succeed({ id: asBotId("bot-1"), name: "Bot", description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 } as any), findAll: () => Effect.succeed([]), update: (b) => Effect.succeed(b), delete: () => Effect.void };
-    const workspace: BotWorkspace = { root: "/tmp", ensureHome: () => Effect.succeed("/tmp"), writePersona: () => Effect.void, homePath: () => "/tmp" };
+    const botRepo: BotRepository = {
+      create: (b) => Effect.succeed(b),
+      findById: () =>
+        Effect.succeed({
+          id: asBotId("bot-1"),
+          name: "Bot",
+          description: "",
+          persona: "",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        } as any),
+      findAll: () => Effect.succeed([]),
+      update: (b) => Effect.succeed(b),
+      delete: () => Effect.void,
+    };
+    const workspace: BotWorkspace = {
+      root: "/tmp",
+      ensureHome: () => Effect.succeed("/tmp"),
+      writePersona: () => Effect.void,
+      homePath: () => "/tmp",
+    };
     let cancelled = false;
     const runtime: AgentRuntime = {
       id: "fake",
       capabilities: { streaming: true, resumableSessions: false, cancellation: true },
       startRun: () => Effect.succeed({ runId: "rt-1", sessionId: "s" } as RunHandle),
-      cancelRun: () => { cancelled = true; return Effect.void; },
+      cancelRun: () => {
+        cancelled = true;
+        return Effect.void;
+      },
       streamEvents: () => Stream.empty as Stream.Stream<RuntimeEvent, RuntimeError>,
       getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult),
     };
@@ -115,8 +251,17 @@ describe("RunService", () => {
       streamEvents: () => Stream.empty as Stream.Stream<RuntimeEvent, RuntimeError>,
       getResult: () => Effect.succeed({ exitCode: 0, summary: "ok" } as RunResult),
     };
-    const service = new RunService(runRepo, botRepo, workspace, runtime2, { now: () => 1 }, { generate: () => "run-1" });
-    const run = await Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }));
+    const service = new RunService(
+      runRepo,
+      botRepo,
+      workspace,
+      runtime2,
+      { now: () => 1 },
+      { generate: () => "run-1" },
+    );
+    const run = await Effect.runPromise(
+      service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
+    );
     const cancelledRun = await Effect.runPromise(service.cancelRun(run.id));
     expect(cancelledRun?.status).toBe("cancelled");
     expect(cancelled).toBe(true);
@@ -126,23 +271,76 @@ describe("RunService", () => {
     const store = new Map<string, any>();
     const events = new Map<string, any[]>();
     const runRepo: RunRepository = {
-      create: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      create: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       findById: (id) => Effect.succeed(store.get(id) ?? null),
-      findAll: (opts) => Effect.succeed([...store.values()].filter((r) => (!opts?.botId || r.botId === opts.botId) && (!opts?.status || r.status === opts.status))),
-      update: (run) => { store.set(run.id, run); return Effect.succeed(run); },
+      findAll: (opts) =>
+        Effect.succeed(
+          [...store.values()].filter(
+            (r) =>
+              (!opts?.botId || r.botId === opts.botId) &&
+              (!opts?.status || r.status === opts.status),
+          ),
+        ),
+      update: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
       appendEvent: (runId, event) => {
         const arr = events.get(runId) ?? [];
         arr.push(event);
         events.set(runId, arr);
         return Effect.void;
       },
-      listEvents: (runId) => Effect.succeed((events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 }))),
+      listEvents: (runId) =>
+        Effect.succeed(
+          (events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 })),
+        ),
     };
-    const botRepo: BotRepository = { create: (b) => Effect.succeed(b), findById: () => Effect.succeed({ id: asBotId("bot-1"), name: "Bot", description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 } as any), findAll: () => Effect.succeed([]), update: (b) => Effect.succeed(b), delete: () => Effect.void };
-    const workspace: BotWorkspace = { root: "/tmp", ensureHome: () => Effect.succeed("/tmp"), writePersona: () => Effect.void, homePath: () => "/tmp" };
-    const runtime: AgentRuntime = { id: "fake", capabilities: { streaming: true, resumableSessions: false, cancellation: false }, startRun: () => Effect.succeed({ runId: "rt-1", sessionId: "s" } as RunHandle), cancelRun: () => Effect.void, streamEvents: () => Stream.fromIterable([{ _tag: "progress", message: "x" }] as RuntimeEvent[]), getResult: () => Effect.succeed({ exitCode: 1, summary: "fail" } as RunResult) };
-    const service = new RunService(runRepo, botRepo, workspace, runtime, { now: () => 1 }, { generate: () => "run-1" });
-    const run = await Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }));
+    const botRepo: BotRepository = {
+      create: (b) => Effect.succeed(b),
+      findById: () =>
+        Effect.succeed({
+          id: asBotId("bot-1"),
+          name: "Bot",
+          description: "",
+          persona: "",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        } as any),
+      findAll: () => Effect.succeed([]),
+      update: (b) => Effect.succeed(b),
+      delete: () => Effect.void,
+    };
+    const workspace: BotWorkspace = {
+      root: "/tmp",
+      ensureHome: () => Effect.succeed("/tmp"),
+      writePersona: () => Effect.void,
+      homePath: () => "/tmp",
+    };
+    const runtime: AgentRuntime = {
+      id: "fake",
+      capabilities: { streaming: true, resumableSessions: false, cancellation: false },
+      startRun: () => Effect.succeed({ runId: "rt-1", sessionId: "s" } as RunHandle),
+      cancelRun: () => Effect.void,
+      streamEvents: () =>
+        Stream.fromIterable([{ _tag: "progress", message: "x" }] as RuntimeEvent[]),
+      getResult: () => Effect.succeed({ exitCode: 1, summary: "fail" } as RunResult),
+    };
+    const service = new RunService(
+      runRepo,
+      botRepo,
+      workspace,
+      runtime,
+      { now: () => 1 },
+      { generate: () => "run-1" },
+    );
+    const run = await Effect.runPromise(
+      service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
+    );
     await new Promise((r) => setTimeout(r, 50));
     const evs = await Effect.runPromise(service.getRunEvents(run.id));
     expect(evs.length).toBeGreaterThan(0);
@@ -174,7 +372,9 @@ function makeRunRepo() {
       return Effect.void;
     },
     listEvents: (runId) =>
-      Effect.succeed((events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 }))),
+      Effect.succeed(
+        (events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 })),
+      ),
   };
   return { repo, store };
 }
@@ -451,9 +651,7 @@ describe("RunService branches", () => {
       ...base.repo,
       findById: () => {
         calls += 1;
-        return Effect.succeed(
-          calls === 1 ? running : { ...running, status: "cancelled" as const },
-        );
+        return Effect.succeed(calls === 1 ? running : { ...running, status: "cancelled" as const });
       },
     };
     const runtime = makeRuntime({

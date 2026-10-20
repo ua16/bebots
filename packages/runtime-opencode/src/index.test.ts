@@ -23,7 +23,11 @@ function makeProcess(): FakeProcess {
   return proc;
 }
 
-function announceServer(proc: FakeProcess, url = "http://127.0.0.1:4321", password = "secret"): void {
+function announceServer(
+  proc: FakeProcess,
+  url = "http://127.0.0.1:4321",
+  password = "secret",
+): void {
   setTimeout(() => {
     proc.stdout.emit(
       "data",
@@ -71,11 +75,17 @@ function makeFetch(
 /**
  * A handler that models a happy-path OpenCode server. `messages` is returned
  * for the session message poll; when it contains an `idle` entry the run
- * completes.
+ * completes. The first message GET (the pre-prompt snapshot the runtime takes
+ * on start, issue #21) returns nothing — fresh messages only exist after the
+ * prompt has been sent.
  */
 function happyHandler(messages: unknown[]) {
+  let messageCalls = 0;
   return (method: string, path: string): Response => {
-    if (method === "GET" && path.endsWith("/message")) return jsonResponse(messages);
+    if (method === "GET" && path.endsWith("/message")) {
+      messageCalls += 1;
+      return jsonResponse(messageCalls === 1 ? [] : messages);
+    }
     if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
     if (method === "POST" && path.endsWith("/prompt")) return noContent();
     if (method === "POST" && path.endsWith("/interrupt")) return noContent();
@@ -179,11 +189,12 @@ describe("OpenCodeRuntime", () => {
 
   it("resumes an existing session when the server knows it", async () => {
     announceServer(proc);
+    const handler = happyHandler([{ type: "idle", outcome: "succeeded" }]);
     const { fn: fetchMock, calls } = makeFetch((method, path) => {
       if (method === "GET" && path === "/api/session/existing") {
         return jsonResponse({ id: "existing" });
       }
-      return happyHandler([{ type: "idle", outcome: "succeeded" }])(method, path);
+      return handler(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -194,8 +205,86 @@ describe("OpenCodeRuntime", () => {
     await drain(runtime, handle);
   });
 
-  it("creates the session with the requested id when it is missing", async () => {
+  it("reports only this run's messages on a resumed session (issue #21)", async () => {
     announceServer(proc);
+    // The session already holds earlier runs' messages — historically the
+    // poll found the FIRST idle/assistant pair in the whole session, so every
+    // resumed run completed instantly with the original run's stale reply.
+    const historical = [
+      { id: "m-hist-idle", type: "idle", outcome: "succeeded" },
+      { id: "m-hist-assistant", type: "assistant", content: [{ text: "stale first reply" }] },
+    ];
+    let prompted = false;
+    const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path.endsWith("/message")) {
+        return jsonResponse(
+          prompted
+            ? [
+                ...historical,
+                { id: "m-new-idle", type: "idle", outcome: "succeeded" },
+                {
+                  id: "m-new-assistant",
+                  type: "assistant",
+                  content: [{ text: "the real answer" }],
+                },
+              ]
+            : historical,
+        );
+      }
+      if (method === "POST" && path.endsWith("/prompt")) {
+        prompted = true;
+        return noContent();
+      }
+      return happyHandler([])(method, path);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime, { sessionId: "existing" });
+    const result = await Effect.runPromise(runtime.getResult(handle));
+    expect(result.summary).toBe("the real answer");
+  });
+
+  it("posts only text parts as the summary, not reasoning parts", async () => {
+    announceServer(proc);
+    let prompted = false;
+    const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path.endsWith("/message")) {
+        return jsonResponse(
+          prompted
+            ? [
+                {
+                  id: "m-assistant",
+                  type: "assistant",
+                  content: [
+                    { type: "reasoning", text: "internal model thoughts" },
+                    { type: "text", text: "the visible answer" },
+                  ],
+                },
+                { id: "m-idle", type: "idle", outcome: "succeeded" },
+              ]
+            : [],
+        );
+      }
+      if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
+      if (method === "POST" && path.endsWith("/prompt")) {
+        prompted = true;
+        return noContent();
+      }
+      if (method === "POST" && path.endsWith("/interrupt")) return noContent();
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime);
+    const result = await Effect.runPromise(runtime.getResult(handle));
+    expect(result.summary).toBe("the visible answer");
+  });
+
+  it("starts a genuinely new session when the stored session is missing", async () => {
+    announceServer(proc);
+    const handler = happyHandler([{ type: "idle", outcome: "succeeded" }]);
     const { fn: fetchMock, calls } = makeFetch((method, path, init) => {
       if (method === "GET" && path === "/api/session/new-session") {
         return jsonResponse({ error: "missing" }, 404);
@@ -204,15 +293,17 @@ describe("OpenCodeRuntime", () => {
         const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string };
         return jsonResponse({ id: body.id ?? "sess-1" });
       }
-      return happyHandler([{ type: "idle", outcome: "succeeded" }])(method, path);
+      return handler(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
     const handle = await start(runtime, { sessionId: "new-session" });
-    expect(handle.sessionId).toBe("new-session");
+    // Transparent recovery: the stale id is not retried or re-created — the
+    // runtime hands back the id of the fresh session it created.
+    expect(handle.sessionId).toBe("sess-1");
     const createCall = calls.find((c) => c.method === "POST" && c.path === "/api/session");
-    expect(createCall?.init?.body).toContain("new-session");
+    expect(JSON.parse(String(createCall?.init?.body ?? "{}")).id).toBeUndefined();
     await drain(runtime, handle);
   });
 
@@ -263,18 +354,14 @@ describe("OpenCodeRuntime", () => {
 
   it("handles unknown runs", async () => {
     const runtime = new OpenCodeRuntime();
-    await expect(
-      Effect.runPromise(runtime.getResult({ runId: "missing" })),
-    ).rejects.toBeDefined();
+    await expect(Effect.runPromise(runtime.getResult({ runId: "missing" }))).rejects.toBeDefined();
     await Effect.runPromise(runtime.cancelRun({ runId: "missing" }));
     expect(await collectEvents(runtime.streamEvents({ runId: "missing" }))).toEqual([]);
   });
 
   it("closes the server process", async () => {
     announceServer(proc);
-    const { fn: fetchMock } = makeFetch(
-      happyHandler([{ type: "idle", outcome: "succeeded" }]),
-    );
+    const { fn: fetchMock } = makeFetch(happyHandler([{ type: "idle", outcome: "succeeded" }]));
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -302,7 +389,19 @@ describe("OpenCodeRuntime", () => {
 
   it("shares a single server across concurrent starts", async () => {
     announceServer(proc);
-    const { fn: fetchMock } = makeFetch(happyHandler([{ type: "idle", outcome: "succeeded" }]));
+    // Each run snapshots before prompting and polls only its own fresh
+    // messages, so every poll GET must produce a brand-new message id.
+    let counter = 0;
+    const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path.endsWith("/message")) {
+        const seq = ++counter;
+        return jsonResponse([{ id: `m-${seq}`, type: "idle", outcome: "succeeded" }]);
+      }
+      if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
+      if (method === "POST" && path.endsWith("/prompt")) return noContent();
+      if (method === "POST" && path.endsWith("/interrupt")) return noContent();
+      return jsonResponse({ error: "not found" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -338,8 +437,14 @@ describe("OpenCodeRuntime", () => {
 
   it("marks the run failed when polling throws", async () => {
     announceServer(proc);
+    let prompted = false;
     const { fn: fetchMock } = makeFetch((method, path) => {
-      if (method === "GET" && path.endsWith("/message")) throw new Error("poll boom");
+      if (method === "POST" && path.endsWith("/prompt")) {
+        prompted = true;
+        return noContent();
+      }
+      // Only poll-time failures throw — the pre-prompt snapshot must succeed.
+      if (method === "GET" && path.endsWith("/message") && prompted) throw new Error("poll boom");
       return happyHandler([])(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -355,12 +460,19 @@ describe("OpenCodeRuntime", () => {
 
   it("unwraps wrapped { data } responses", async () => {
     announceServer(proc);
+    let prompted = false;
     const { fn: fetchMock } = makeFetch((method, path) => {
       if (method === "POST" && path === "/api/session") {
         return jsonResponse({ data: { id: "wrapped" } });
       }
+      if (method === "POST" && path.endsWith("/prompt")) {
+        prompted = true;
+        return noContent();
+      }
       if (method === "GET" && path.endsWith("/message")) {
-        return jsonResponse({ data: [{ type: "idle", outcome: "succeeded" }] });
+        return jsonResponse(
+          prompted ? { data: [{ id: "m-new", type: "idle", outcome: "succeeded" }] } : { data: [] },
+        );
       }
       return happyHandler([])(method, path);
     });
@@ -375,9 +487,7 @@ describe("OpenCodeRuntime", () => {
 
   it("streams events while a run is still in flight", async () => {
     announceServer(proc);
-    const { fn: fetchMock } = makeFetch(
-      happyHandler([{ type: "idle", outcome: "succeeded" }]),
-    );
+    const { fn: fetchMock } = makeFetch(happyHandler([{ type: "idle", outcome: "succeeded" }]));
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();

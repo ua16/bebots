@@ -43,6 +43,75 @@ export const RUN_TRIGGERS = ["manual", "schedule", "message", "task", "api"] as 
 
 export type RunTrigger = (typeof RUN_TRIGGERS)[number];
 
+export type ConversationId = string & { readonly __brand: "ConversationId" };
+
+export function asConversationId(value: string): ConversationId {
+  if (value.trim().length === 0) {
+    throw new Error("ConversationId cannot be empty");
+  }
+  return value as ConversationId;
+}
+
+export type MessageId = string & { readonly __brand: "MessageId" };
+
+export function asMessageId(value: string): MessageId {
+  if (value.trim().length === 0) {
+    throw new Error("MessageId cannot be empty");
+  }
+  return value as MessageId;
+}
+
+export type ConversationSessionId = string & { readonly __brand: "ConversationSessionId" };
+
+export function asConversationSessionId(value: string): ConversationSessionId {
+  if (value.trim().length === 0) {
+    throw new Error("ConversationSessionId cannot be empty");
+  }
+  return value as ConversationSessionId;
+}
+
+export const CONVERSATION_KINDS = ["direct", "team"] as const;
+
+export type ConversationKind = (typeof CONVERSATION_KINDS)[number];
+
+export type DeliveryState = "pending" | "delivered" | "failed" | "sent" | "read";
+
+export type ConversationSessionStatus = "active" | "expired" | "closed";
+
+export type MessageSenderType = "human" | "bot" | "system";
+
+export interface Conversation {
+  readonly id: ConversationId;
+  readonly kind: ConversationKind;
+  readonly title: string;
+  readonly participants: readonly string[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface Message {
+  readonly id: MessageId;
+  readonly conversationId: ConversationId;
+  readonly senderType: MessageSenderType;
+  readonly senderId?: string | null;
+  readonly content: string;
+  readonly replyTo?: MessageId;
+  readonly threadId?: string;
+  readonly deliveryState: DeliveryState;
+  readonly createdAt: number;
+}
+
+export interface ConversationSession {
+  readonly id: ConversationSessionId;
+  readonly conversationId: ConversationId;
+  /** Runtime session id this record mirrors; never the source of truth for bot identity. */
+  readonly runtimeSessionId: string;
+  readonly lastUsedAt: number;
+  readonly status: ConversationSessionStatus;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
 export interface Run {
   readonly id: RunId;
   readonly botId: BotId;
@@ -50,6 +119,8 @@ export interface Run {
   readonly prompt: string;
   readonly status: RunStatus;
   readonly sessionId?: string;
+  readonly conversationId?: ConversationId;
+  readonly conversationSessionId?: ConversationSessionId;
   readonly timeoutMs: number;
   readonly startedAt?: number;
   readonly endedAt?: number;

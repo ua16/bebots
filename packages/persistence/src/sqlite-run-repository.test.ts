@@ -50,8 +50,26 @@ describe("SqliteRunRepository", () => {
     const db = await openDatabase(dbPath);
     migrate(db);
     const repo = createSqliteRunRepository(db);
-    const r1 = { id: asRunId("r1"), botId: asBotId("b1"), triggerType: "manual" as const, prompt: "a", status: "queued" as const, timeoutMs: 1, createdAt: 1, updatedAt: 1 };
-    const r2 = { id: asRunId("r2"), botId: asBotId("b2"), triggerType: "api" as const, prompt: "b", status: "succeeded" as const, timeoutMs: 1, createdAt: 2, updatedAt: 2 };
+    const r1 = {
+      id: asRunId("r1"),
+      botId: asBotId("b1"),
+      triggerType: "manual" as const,
+      prompt: "a",
+      status: "queued" as const,
+      timeoutMs: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const r2 = {
+      id: asRunId("r2"),
+      botId: asBotId("b2"),
+      triggerType: "api" as const,
+      prompt: "b",
+      status: "succeeded" as const,
+      timeoutMs: 1,
+      createdAt: 2,
+      updatedAt: 2,
+    };
     await Effect.runPromise(repo.create(r1));
     await Effect.runPromise(repo.create(r2));
     const byBot = await Effect.runPromise(repo.findAll({ botId: asBotId("b1") }));
@@ -67,12 +85,23 @@ describe("SqliteRunRepository", () => {
     const db = await openDatabase(dbPath);
     migrate(db);
     const repo = createSqliteRunRepository(db);
-    const run = { id: asRunId("r1"), botId: asBotId("b1"), triggerType: "manual" as const, prompt: "a", status: "queued" as const, timeoutMs: 1, createdAt: 1, updatedAt: 1 };
+    const run = {
+      id: asRunId("r1"),
+      botId: asBotId("b1"),
+      triggerType: "manual" as const,
+      prompt: "a",
+      status: "queued" as const,
+      timeoutMs: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
     await Effect.runPromise(repo.create(run));
     const updated = { ...run, status: "running" as const, updatedAt: 2 };
     const res = await Effect.runPromise(repo.update(updated));
     expect(res.status).toBe("running");
-    await expect(Effect.runPromise(repo.update({ ...run, id: asRunId("nope"), status: "running" as const }))).rejects.toThrow();
+    await expect(
+      Effect.runPromise(repo.update({ ...run, id: asRunId("nope"), status: "running" as const })),
+    ).rejects.toThrow();
     db.close();
   });
 
@@ -80,7 +109,16 @@ describe("SqliteRunRepository", () => {
     const db = await openDatabase(dbPath);
     migrate(db);
     const repo = createSqliteRunRepository(db);
-    const run = { id: asRunId("r1"), botId: asBotId("b1"), triggerType: "manual" as const, prompt: "a", status: "queued" as const, timeoutMs: 1, createdAt: 1, updatedAt: 1 };
+    const run = {
+      id: asRunId("r1"),
+      botId: asBotId("b1"),
+      triggerType: "manual" as const,
+      prompt: "a",
+      status: "queued" as const,
+      timeoutMs: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
     await Effect.runPromise(repo.create(run));
     await Effect.runPromise(repo.appendEvent(asRunId("r1"), { _tag: "started", at: 1 }));
     const evs = await Effect.runPromise(repo.listEvents(asRunId("r1")));

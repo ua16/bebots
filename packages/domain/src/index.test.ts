@@ -51,7 +51,6 @@ describe("approval transitions", () => {
   });
 });
 
-
 describe("asRunId", () => {
   it("accepts a non-empty value", () => {
     expect(asRunId("run-1")).toBe("run-1");

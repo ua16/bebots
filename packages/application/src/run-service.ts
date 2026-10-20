@@ -1,15 +1,37 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 
 import { Cause, Effect, Stream } from "effect";
-import type { BotId, Run, RunId, RunStatus, RunTrigger } from "@bebots/domain";
+import type {
+  BotId,
+  ConversationSession,
+  Run,
+  RunId,
+  RunStatus,
+  RunTrigger,
+  ConversationId,
+  ConversationSessionId,
+} from "@bebots/domain";
 import { asRunId } from "@bebots/domain";
 import type { AgentRuntime, RunHandle, RunRequest, RuntimeError, RuntimeEvent } from "./runtime.js";
-import type { BotRepository, BotWorkspace, Clock, IdGenerator, RunRepository } from "./repositories.js";
+import type { ConversationSessionOps } from "./conversation-service.js";
+import type { ConversationReplyRecorder } from "./conversation-run-coordinator.js";
+import type {
+  BotRepository,
+  BotWorkspace,
+  Clock,
+  IdGenerator,
+  RunRepository,
+} from "./repositories.js";
 import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
     return error.message;
   }
   return String(error);
@@ -22,6 +44,10 @@ export interface RunServiceDeps {
   readonly runtime: AgentRuntime;
   readonly clock: Clock;
   readonly ids: IdGenerator;
+  /** Session-store operations; enables conversation-resume behavior (PLAN §6.4). */
+  readonly conversationSessions?: ConversationSessionOps;
+  /** Reply recording; conversation runs post their summary into the thread. */
+  readonly conversationMessages?: ConversationReplyRecorder;
 }
 
 export interface StartRunInput {
@@ -29,6 +55,8 @@ export interface StartRunInput {
   readonly prompt: string;
   readonly timeoutMs?: number;
   readonly sessionId?: string;
+  readonly conversationId?: ConversationId;
+  readonly conversationSessionId?: ConversationSessionId;
   readonly triggerType?: RunTrigger;
 }
 
@@ -51,6 +79,8 @@ export class RunService {
   private readonly runtime: AgentRuntime;
   private readonly clock: Clock;
   private readonly ids: IdGenerator;
+  private readonly conversationSessions: ConversationSessionOps | undefined;
+  private readonly conversationMessages: ConversationReplyRecorder | undefined;
   private readonly handles = new Map<string, RunHandle>();
 
   constructor(
@@ -60,6 +90,8 @@ export class RunService {
     runtime?: AgentRuntime,
     clock?: Clock,
     ids?: IdGenerator,
+    conversationSessions?: ConversationSessionOps,
+    conversationMessages?: ConversationReplyRecorder,
   ) {
     if (isDeps(runRepoOrDeps)) {
       const v = runRepoOrDeps as unknown as Record<string, unknown>;
@@ -69,6 +101,8 @@ export class RunService {
       this.runtime = v.runtime as AgentRuntime;
       this.clock = v.clock as Clock;
       this.ids = (v.ids ?? v.idGenerator) as IdGenerator;
+      this.conversationSessions = v.conversationSessions as ConversationSessionOps | undefined;
+      this.conversationMessages = v.conversationMessages as ConversationReplyRecorder | undefined;
     } else {
       this.runRepo = runRepoOrDeps;
       this.botRepo = botRepo as BotRepository;
@@ -76,12 +110,17 @@ export class RunService {
       this.runtime = runtime as AgentRuntime;
       this.clock = clock as Clock;
       this.ids = ids as IdGenerator;
+      this.conversationSessions = conversationSessions;
+      this.conversationMessages = conversationMessages;
     }
   }
 
   startRun(
     input: StartRunInput,
-  ): Effect.Effect<Run, ValidationError | NotFoundError | RepositoryError | WorkspaceError | RuntimeError> {
+  ): Effect.Effect<
+    Run,
+    ValidationError | NotFoundError | RepositoryError | WorkspaceError | RuntimeError
+  > {
     const self = this;
     return Effect.gen(function* () {
       const bot = yield* self.botRepo.findById(input.botId);
@@ -100,6 +139,31 @@ export class RunService {
       } catch {
         return yield* Effect.fail(new ValidationError("id", "Invalid run id"));
       }
+
+      // Resolve the stored session to resume (PLAN §6.4): an explicit session
+      // wins; otherwise, for conversation runs, resume the most recent active
+      // ConversationSession by default.
+      let storedSession: ConversationSession | null = null;
+      let resumeSessionId: string | undefined = input.sessionId;
+      const sessions = self.conversationSessions;
+      if (sessions && input.conversationId) {
+        if (input.conversationSessionId) {
+          storedSession = yield* sessions.getSession(String(input.conversationSessionId));
+          if (!storedSession) {
+            return yield* Effect.fail(
+              new NotFoundError("ConversationSession", String(input.conversationSessionId)),
+            );
+          }
+        } else {
+          storedSession = yield* sessions.findResumableSession(String(input.conversationId));
+        }
+        if (storedSession) {
+          resumeSessionId = storedSession.runtimeSessionId;
+        }
+      }
+
+      let conversationSessionId: ConversationSessionId | undefined =
+        storedSession?.id ?? input.conversationSessionId;
       const now = self.clock.now();
       const run: Run = {
         id: runId,
@@ -107,7 +171,9 @@ export class RunService {
         triggerType: input.triggerType ?? "manual",
         prompt,
         status: "queued",
-        sessionId: input.sessionId,
+        sessionId: resumeSessionId,
+        conversationId: input.conversationId,
+        conversationSessionId,
         timeoutMs,
         createdAt: now,
         updatedAt: now,
@@ -118,14 +184,49 @@ export class RunService {
         botId: input.botId,
         workingDirectory: home,
         prompt,
-        sessionId: input.sessionId,
+        sessionId: resumeSessionId,
         timeoutMs,
       } as RunRequest;
 
       const handle = yield* self.runtime.startRun(request);
+      const usedSessionId = handle.sessionId ?? resumeSessionId;
+
+      // Capture/rotate the ConversationSession record. This must not block
+      // the run when bookkeeping fails (e.g. the record was deleted in a
+      // race): failures are logged, never silently swallowed.
+      const bookkeeping = Effect.gen(function* () {
+        if (!sessions || !input.conversationId || usedSessionId === undefined) return;
+        if (storedSession) {
+          if (storedSession.runtimeSessionId !== usedSessionId) {
+            storedSession = yield* sessions.replaceRuntimeSession(
+              String(storedSession.id),
+              usedSessionId,
+            );
+          } else {
+            storedSession = yield* sessions.touchSession(String(storedSession.id));
+          }
+        } else {
+          storedSession = yield* sessions.createSession({
+            conversationId: String(input.conversationId),
+            runtimeSessionId: usedSessionId,
+          });
+        }
+        conversationSessionId = storedSession?.id ?? conversationSessionId;
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError(
+            "Conversation session bookkeeping failed",
+            runId,
+            describeError(Cause.squash(cause)),
+          ),
+        ),
+      );
+      yield* bookkeeping;
+
       const startedRun: Run = {
         ...run,
-        sessionId: (handle.sessionId ?? run.sessionId) as string,
+        ...(usedSessionId !== undefined && { sessionId: usedSessionId }),
+        ...(conversationSessionId !== undefined && { conversationSessionId }),
         status: "running",
         startedAt: self.clock.now(),
         updatedAt: self.clock.now(),
@@ -139,17 +240,15 @@ export class RunService {
       // silently swallowed.
       const finalize: Effect.Effect<void> = Effect.gen(function* () {
         // Event-stream failures must not abort result capture.
-        yield* Stream.runForEach(
-          self.runtime.streamEvents(handle),
-          (event: RuntimeEvent) => self.runRepo.appendEvent(runId, event),
+        yield* Stream.runForEach(self.runtime.streamEvents(handle), (event: RuntimeEvent) =>
+          self.runRepo.appendEvent(runId, event),
         ).pipe(Effect.ignore);
 
         const current = yield* self.runRepo.findById(runId);
         if (!current || current.status === "cancelled") return;
 
         const result = yield* self.runtime.getResult(handle);
-        const terminalStatus: RunStatus =
-          result.exitCode === 0 ? "succeeded" : "failed";
+        const terminalStatus: RunStatus = result.exitCode === 0 ? "succeeded" : "failed";
         const finalRun: Run = {
           ...startedRun,
           status: terminalStatus,
@@ -160,6 +259,32 @@ export class RunService {
           updatedAt: self.clock.now(),
         };
         yield* self.runRepo.update(finalRun);
+
+        // PLAN §12 M3: a succeeded conversation run posts its answer into the
+        // thread as a bot reply — whoever started it. Recording must not be
+        // able to take finalization down; failures are logged.
+        const replies = self.conversationMessages;
+        if (
+          replies &&
+          finalRun.conversationId !== undefined &&
+          String(finalRun.summary ?? "").trim().length > 0
+        ) {
+          yield* replies
+            .recordBotReply(
+              String(finalRun.conversationId),
+              String(finalRun.botId),
+              String(finalRun.summary),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError(
+                  "Recording bot reply failed",
+                  runId,
+                  describeError(Cause.squash(cause)),
+                ),
+              ),
+            );
+        }
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
@@ -178,7 +303,9 @@ export class RunService {
         // Failures of the fallback path itself (e.g. the persisted run is
         // unreachable) can only be surfaced through Effect's log channel; they
         // must not disappear silently.
-        Effect.catchCause((cause) => Effect.logError("Run finalization failed", runId, describeError(Cause.squash(cause)))),
+        Effect.catchCause((cause) =>
+          Effect.logError("Run finalization failed", runId, describeError(Cause.squash(cause))),
+        ),
       );
       yield* Effect.forkDetach(finalize);
 
@@ -222,10 +349,7 @@ export class RunService {
     return this.runRepo.listEvents(id);
   }
 
-  awaitRun(
-    id: RunId,
-    timeoutMs = 300_000,
-  ): Effect.Effect<Run | null, RepositoryError> {
+  awaitRun(id: RunId, timeoutMs = 300_000): Effect.Effect<Run | null, RepositoryError> {
     const self = this;
     return Effect.gen(function* () {
       const deadline = Date.now() + timeoutMs;
