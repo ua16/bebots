@@ -6,7 +6,13 @@ export default defineConfig({
   main: {
     plugins: [
       externalizeDepsPlugin({
-        exclude: ["@bebots/domain", "@bebots/shared", "@bebots/application", "@bebots/persistence", "@bebots/runtime-opencode"],
+        exclude: [
+          "@bebots/domain",
+          "@bebots/shared",
+          "@bebots/application",
+          "@bebots/persistence",
+          "@bebots/runtime-opencode",
+        ],
         include: ["sql.js"],
       }),
     ],
@@ -19,7 +25,13 @@ export default defineConfig({
   preload: {
     plugins: [
       externalizeDepsPlugin({
-        exclude: ["@bebots/domain", "@bebots/shared", "@bebots/application", "@bebots/persistence", "@bebots/runtime-opencode"],
+        exclude: [
+          "@bebots/domain",
+          "@bebots/shared",
+          "@bebots/application",
+          "@bebots/persistence",
+          "@bebots/runtime-opencode",
+        ],
         include: ["sql.js"],
       }),
     ],

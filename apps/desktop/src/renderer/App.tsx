@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
 import "./styles.css";
 
@@ -8,8 +8,61 @@ declare global {
   }
 }
 
+interface ApiEndpoint {
+  readonly url: string;
+  readonly token: string;
+}
+
+interface ApiConversation {
+  readonly id: string;
+  readonly kind: string;
+  readonly title: string;
+  readonly participants: readonly string[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+interface ApiMessage {
+  readonly id: string;
+  readonly conversationId: string;
+  readonly senderType: "human" | "bot" | "system";
+  readonly senderId?: string | null;
+  readonly content: string;
+  readonly createdAt: number;
+}
+
+interface ApiRun {
+  readonly id: string;
+  readonly botId: string;
+  readonly status: string;
+  readonly prompt: string;
+  readonly summary?: string;
+  readonly error?: string;
+  readonly createdAt: number;
+}
+
+async function apiFetch<T>(
+  endpoint: ApiEndpoint,
+  path: string,
+  init?: { readonly method?: string; readonly body?: unknown },
+): Promise<T> {
+  const res = await fetch(`${endpoint.url}${path}`, {
+    method: init?.method ?? "GET",
+    headers: {
+      Authorization: `Bearer ${endpoint.token}`,
+      "Content-Type": "application/json",
+    },
+    ...(init?.body !== undefined && { body: JSON.stringify(init.body) }),
+  });
+  if (!res.ok) {
+    throw new Error(`API ${path} failed: ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
 export function App() {
   const [platform, setPlatform] = useState<string>("unknown");
+  const [endpoint, setEndpoint] = useState<ApiEndpoint | null>(null);
   const [bots, setBots] = useState<readonly BebotsBot[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -21,10 +74,37 @@ export function App() {
   const [runResult, setRunResult] = useState<string | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
 
+  // Conversations
+  const [conversations, setConversations] = useState<readonly ApiConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<readonly ApiMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  // Run history for the selected bot
+  const [runHistory, setRunHistory] = useState<readonly ApiRun[]>([]);
+  // Chat surface state: toggled bots panel, reply-run indicator, notices.
+  const [botsPanelOpen, setBotsPanelOpen] = useState(true);
+  const [pendingReply, setPendingReply] = useState(false);
+  const [threadNotice, setThreadNotice] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
+
   const bebots = window.bebots;
   const api = bebots?.bots;
 
-  const refresh = async () => {
+  useEffect(() => {
+    setPlatform(window.bebots?.platform ?? "unavailable");
+    if (window.bebots?.workspace) {
+      void window.bebots.workspace
+        .getRoot()
+        .then(setWorkspaceRoot)
+        .catch(() => {});
+    }
+    void window.bebots?.apiEndpoint?.().then((e) => {
+      if (e) setEndpoint(e);
+    });
+  }, []);
+
+  const refreshBots = async () => {
     if (!api) return;
     try {
       const list = await api.list(false);
@@ -34,16 +114,161 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    setPlatform(window.bebots?.platform ?? "unavailable");
-    if (window.bebots?.workspace) {
-      void window.bebots.workspace.getRoot().then(setWorkspaceRoot).catch(() => {});
+  const refreshConversations = useCallback(async () => {
+    if (!endpoint) return;
+    try {
+      setConversations(
+        await apiFetch<readonly ApiConversation[]>(endpoint, "/api/v1/conversations"),
+      );
+    } catch (e) {
+      setError(String(e));
     }
-    void refresh();
+  }, [endpoint]);
+
+  useEffect(() => {
+    void refreshBots();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    void refreshConversations();
+  }, [refreshConversations]);
+
+  const refreshMessages = async (conversationId: string) => {
+    if (!endpoint) return;
+    try {
+      const list = await apiFetch<readonly ApiMessage[]>(
+        endpoint,
+        `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+      );
+      setMessages(list);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const selectConversation = (id: string) => {
+    activeIdRef.current = id;
+    setActiveConversationId(id);
+    setMessages([]);
+    setPendingReply(false);
+    setThreadNotice(null);
+    void refreshMessages(id);
+  };
+
+  /**
+   * A human message triggers a reply run for a participating bot (full reply
+   * loop, PLAN §12 M3). The bot's answer lands asynchronously when its run
+   * completes, so poll the thread briefly after sending and drive the typing
+   * indicator until it arrives — or surface a notice if it never does.
+   */
+  const pollForReply = (
+    conversationId: string,
+    afterCreatedAt: number,
+    endpointAt: ApiEndpoint,
+  ) => {
+    let attempts = 0;
+    const tick = () => {
+      // The user may have switched conversations while the poll was pending;
+      // stop clobbering the thread once it is no longer the visible one.
+      if (activeIdRef.current !== conversationId) return;
+      attempts += 1;
+      void apiFetch<readonly ApiMessage[]>(
+        endpointAt,
+        `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+      )
+        .then((list) => {
+          setMessages(list);
+          const hasReply = list.some((m) => m.senderType === "bot" && m.createdAt > afterCreatedAt);
+          if (hasReply) {
+            setPendingReply(false);
+            setThreadNotice(null);
+            return;
+          }
+          if (attempts >= 20) {
+            setPendingReply(false);
+            setThreadNotice(
+              "No reply yet — the run may still be in flight or failed. Check run history.",
+            );
+            return;
+          }
+          window.setTimeout(tick, 1_500);
+        })
+        .catch(() => {
+          setPendingReply(false);
+        });
+    };
+    window.setTimeout(tick, 1_500);
+  };
+
+  const handleSendMessage = async () => {
+    if (!endpoint || !activeConversationId || draft.trim().length === 0) return;
+    try {
+      const reply = await apiFetch<{ message: ApiMessage; runId: string | null }>(
+        endpoint,
+        `/api/v1/conversations/${encodeURIComponent(activeConversationId)}/messages`,
+        { method: "POST", body: { content: draft } },
+      );
+      setDraft("");
+      setThreadNotice(null);
+      await refreshMessages(activeConversationId);
+      if (reply.runId !== null) {
+        setPendingReply(true);
+        pollForReply(activeConversationId, reply.message.createdAt, endpoint);
+      } else {
+        setPendingReply(false);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleNewConversation = async () => {
+    if (!endpoint) return;
+    try {
+      const conv = await apiFetch<ApiConversation>(endpoint, "/api/v1/conversations", {
+        method: "POST",
+        body: {
+          kind: "direct",
+          title: "New conversation",
+          // Membership is what makes replies trigger: the selected bot (if
+          // any) participates, plus the human sender.
+          participants: selectedId ? [selectedId, "human"] : ["human"],
+        },
+      });
+      await refreshConversations();
+      selectConversation(conv.id);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const refreshRunHistory = useCallback(async () => {
+    if (!endpoint || !selectedId) {
+      setRunHistory([]);
+      return;
+    }
+    try {
+      setRunHistory(
+        await apiFetch<readonly ApiRun[]>(
+          endpoint,
+          `/api/v1/bots/${encodeURIComponent(selectedId)}/runs`,
+        ),
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [endpoint, selectedId]);
+
   const selected = bots.find((b) => b.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (selected) {
+      void refreshRunHistory();
+    } else {
+      setRunHistory([]);
+    }
+  }, [selected, refreshRunHistory]);
 
   useEffect(() => {
     if (selected) {
@@ -63,7 +288,7 @@ export function App() {
     try {
       const bot = await api.create({ name: name || "New bot", description, persona });
       setSelectedId(bot.id);
-      await refresh();
+      await refreshBots();
     } catch (e) {
       setError(String(e));
     }
@@ -74,7 +299,7 @@ export function App() {
     setError(null);
     try {
       await api.update(selectedId, { name, description, persona });
-      await refresh();
+      await refreshBots();
     } catch (e) {
       setError(String(e));
     }
@@ -86,7 +311,7 @@ export function App() {
     try {
       await api.archive(selectedId);
       setSelectedId(null);
-      await refresh();
+      await refreshBots();
     } catch (e) {
       setError(String(e));
     }
@@ -101,81 +326,226 @@ export function App() {
       const final = await bebots!.runs.await(run.id, 120000);
       setRunStatus(final?.status ?? run.status);
       setRunResult(final?.summary ?? null);
+      void refreshRunHistory();
     } catch (e) {
       setError(String(e));
       setRunStatus("failed");
     }
   };
 
+  const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
+  const botName = (id: string | null | undefined) => {
+    if (id === null || id === undefined) return "Bot";
+    return bots.find((b) => b.id === id)?.name ?? id;
+  };
+  const participantsLabel = activeConversation
+    ? activeConversation.participants.map((p) => botName(p)).join(", ")
+    : "";
+  const typingBotParticipant = activeConversation?.participants.find((p) =>
+    bots.some((b) => b.id === p),
+  );
+  const typingLabel =
+    typingBotParticipant === undefined
+      ? "Bot is thinking…"
+      : `${botName(typingBotParticipant)} is thinking…`;
+
+  // Keep the thread pinned to the newest message as replies land.
+  useEffect(() => {
+    const el = threadEndRef.current;
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "end" });
+    }
+  }, [messages, pendingReply, threadNotice, activeConversationId]);
+
   return (
     <main className="app-main">
-      <h1>bebots</h1>
-      <p>Local-first multi-bot agent hub</p>
-      <p>Platform: {platform}</p>
-      {workspaceRoot && <p>Bots home: {workspaceRoot}</p>}
+      <header className="app-header">
+        <div className="app-title">
+          <h1>bebots</h1>
+          <p>Local-first multi-bot agent hub</p>
+          <p className="muted">Platform: {platform}</p>
+          {workspaceRoot && <p className="muted">Bots home: {workspaceRoot}</p>}
+        </div>
+        <button
+          type="button"
+          className="header-toggle"
+          onClick={() => setBotsPanelOpen((open) => !open)}
+        >
+          {botsPanelOpen ? "Hide bots" : "Show bots"}
+        </button>
+      </header>
+      {error && <p className="error app-error">{error}</p>}
 
-      <section className="bot-layout">
-        <aside className="bot-list">
-          <h2>Bots</h2>
-          <ul>
-            {bots.map((bot) => (
-              <li key={bot.id}>
+      <section className="chat-layout">
+        <aside className="chat-sidebar">
+          <div className="chat-sidebar-head">
+            <h2>Conversations</h2>
+            <button type="button" onClick={handleNewConversation}>
+              + New
+            </button>
+          </div>
+          <ul className="chat-list">
+            {conversations.map((c) => (
+              <li key={c.id}>
                 <button
                   type="button"
-                  className={bot.id === selectedId ? "selected" : ""}
-                  onClick={() => setSelectedId(bot.id)}
+                  className={c.id === activeConversationId ? "selected" : ""}
+                  onClick={() => selectConversation(c.id)}
                 >
-                  {bot.name}
+                  {c.title || c.id}
                 </button>
               </li>
             ))}
+            {conversations.length === 0 && <li className="muted">No conversations yet</li>}
           </ul>
-          <button type="button" onClick={() => setSelectedId(null)}>
-            New bot
-          </button>
         </aside>
 
-        <form className="bot-editor" onSubmit={(e) => e.preventDefault()}>
-          <h2>{selected ? "Edit bot" : "New bot"}</h2>
-          <label>
-            Name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
-            Description
-            <input value={description} onChange={(e) => setDescription(e.target.value)} />
-          </label>
-          <label>
-            Persona
-            <textarea value={persona} onChange={(e) => setPersona(e.target.value)} />
-          </label>
-          {error && <p className="error">{error}</p>}
-          <div className="actions">
-            {selected ? (
-              <>
-                <button type="button" onClick={handleSave}>
-                  Save
+        <section className="chat-main">
+          {activeConversation ? (
+            <>
+              <header className="chat-thread-head">
+                <h2>{activeConversation.title || activeConversation.id}</h2>
+                {participantsLabel.length > 0 && <span className="muted">{participantsLabel}</span>}
+              </header>
+              <div className="chat-thread">
+                {messages.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`message ${m.senderType === "human" ? "message-human" : "message-bot"}`}
+                  >
+                    <span className="message-sender">
+                      {m.senderType === "human" ? "You" : botName(m.senderId)}
+                    </span>
+                    <span className="message-content">{m.content}</span>
+                    <time className="message-time">
+                      {new Date(m.createdAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </time>
+                  </div>
+                ))}
+                {pendingReply && <div className="typing">{typingLabel}</div>}
+                {threadNotice !== null && <div className="thread-notice">{threadNotice}</div>}
+                <div ref={threadEndRef} />
+              </div>
+              <form
+                className="composer"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleSendMessage();
+                }}
+              >
+                <input
+                  value={draft}
+                  placeholder="Type a message"
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSendMessage();
+                    }
+                  }}
+                />
+                <button type="button" onClick={handleSendMessage}>
+                  Send
                 </button>
-                <button type="button" onClick={handleArchive}>
-                  Archive
-                </button>
-                <label>
-                  Prompt
-                  <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-                </label>
-                <button type="button" onClick={handleRun}>
-                  Run
-                </button>
-                {runStatus && <p>Run: {runStatus}</p>}
-                {runResult && <pre style={{ whiteSpace: "pre-wrap" }}>{runResult}</pre>}
-              </>
-            ) : (
-              <button type="button" onClick={handleCreate}>
-                Create
+              </form>
+            </>
+          ) : (
+            <div className="chat-empty">
+              <p>Pick a conversation on the left, or start a new one to chat with a bot.</p>
+              <button type="button" onClick={handleNewConversation}>
+                New conversation
               </button>
-            )}
-          </div>
-        </form>
+            </div>
+          )}
+        </section>
+
+        {botsPanelOpen && (
+          <aside className="bots-panel">
+            <div className="bot-list">
+              <h2>Bots</h2>
+              <ul>
+                {bots.map((bot) => (
+                  <li key={bot.id}>
+                    <button
+                      type="button"
+                      className={bot.id === selectedId ? "selected" : ""}
+                      onClick={() => setSelectedId(bot.id)}
+                    >
+                      {bot.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" onClick={() => setSelectedId(null)}>
+                New bot
+              </button>
+            </div>
+
+            <form className="bot-editor" onSubmit={(e) => e.preventDefault()}>
+              <h2>{selected ? "Edit bot" : "New bot"}</h2>
+              <label>
+                Name
+                <input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <label>
+                Description
+                <input value={description} onChange={(e) => setDescription(e.target.value)} />
+              </label>
+              <label>
+                Persona
+                <textarea value={persona} onChange={(e) => setPersona(e.target.value)} />
+              </label>
+              <div className="actions">
+                {selected ? (
+                  <>
+                    <button type="button" onClick={handleSave}>
+                      Save
+                    </button>
+                    <button type="button" onClick={handleArchive}>
+                      Archive
+                    </button>
+                    <label>
+                      Prompt
+                      <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+                    </label>
+                    <button type="button" onClick={handleRun}>
+                      Run
+                    </button>
+                    {runStatus && <p>Run: {runStatus}</p>}
+                    {runResult && <pre style={{ whiteSpace: "pre-wrap" }}>{runResult}</pre>}
+                    {runHistory.length > 0 && (
+                      <div className="run-history">
+                        <h3>Run history</h3>
+                        <ul>
+                          {runHistory.map((run) => (
+                            <li key={run.id}>
+                              <code>{run.status}</code> {run.prompt.slice(0, 60)}
+                              {typeof run.summary === "string" && run.summary.length > 0 && (
+                                <pre style={{ whiteSpace: "pre-wrap" }}>
+                                  {run.summary.slice(0, 200)}
+                                </pre>
+                              )}
+                              {typeof run.error === "string" && run.error.length > 0 && (
+                                <pre className="error">{run.error.slice(0, 200)}</pre>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <button type="button" onClick={handleCreate}>
+                    Create
+                  </button>
+                )}
+              </div>
+            </form>
+          </aside>
+        )}
       </section>
     </main>
   );

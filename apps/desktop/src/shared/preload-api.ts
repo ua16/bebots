@@ -18,6 +18,14 @@ export interface BebotsPreloadApi {
   readonly workspace: {
     readonly getRoot: () => Promise<string>;
   };
+  /**
+   * Coordinates of the local HTTP API (the single business-logic path for the
+   * renderer — IPC is for Electron-specific needs only, per PLAN §4).
+   */
+  readonly apiEndpoint: () => Promise<{
+    readonly url: string;
+    readonly token: string;
+  } | null>;
   readonly bots: {
     readonly list: (includeArchived?: boolean) => Promise<readonly BebotsBot[]>;
     readonly get: (id: string) => Promise<BebotsBot | null>;

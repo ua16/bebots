@@ -3,12 +3,28 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { Effect } from "effect";
-import { openDatabase, migrate, createSqliteBotRepository, createSqliteRunRepository } from "@bebots/persistence";
-import { BotService, RunService } from "@bebots/application";
+import {
+  openDatabase,
+  migrate,
+  createSqliteBotRepository,
+  createSqliteRunRepository,
+  createSqliteConversationRepository,
+  createSqliteMessageRepository,
+  createSqliteConversationSessionRepository,
+  createSqliteFileIndexRepository,
+} from "@bebots/persistence";
+import {
+  BotService,
+  RunService,
+  ConversationService,
+  ConversationSessionService,
+  BotReplyRecorder,
+  ConversationRunCoordinator,
+} from "@bebots/application";
 import type { BotId, RunStatus } from "@bebots/domain";
-import { asBotId, asRunId } from "@bebots/domain";
+import { asBotId, asRunId, asConversationId } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
-import { createNodeBotWorkspace } from "./workspace";
+import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
 
 const isDev = !app.isPackaged;
 
@@ -22,6 +38,10 @@ let closeDb: (() => void) | null = null;
 let closeServer: (() => void) | null = null;
 let _httpServer: ReturnType<typeof createServer> | null = null;
 let runtimeInstance: { close(): void } | null = null;
+let indexerInstance: { close(): void } | null = null;
+let sessionSweepInterval: ReturnType<typeof setInterval> | null = null;
+let apiEndpoint: { url: string; token: string } | null = null;
+let apiPort: number | null = null;
 
 function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -58,6 +78,13 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
   res.end(JSON.stringify(body));
 }
 
+/** Run an Effect task but never let a background routine take the app down. */
+function runLogged(effect: Effect.Effect<unknown, unknown>): void {
+  Effect.runPromise(effect).catch((cause) =>
+    console.error("Background task failed", cause instanceof Error ? cause.message : cause),
+  );
+}
+
 async function setupBotService(): Promise<void> {
   if (typeof app.getPath !== "function") return;
   const userData = app.getPath("userData");
@@ -79,6 +106,30 @@ async function setupBotService(): Promise<void> {
     );
   }
   const workspace = createNodeBotWorkspace({ root: userData });
+
+  const conversationRepo = createSqliteConversationRepository(db);
+  const messageRepo = createSqliteMessageRepository(db);
+  const conversationSessionRepo = createSqliteConversationSessionRepository(db);
+  const fileIndexRepo = createSqliteFileIndexRepository(db);
+
+  const conversationService = new ConversationService({
+    conversationRepo,
+    messageRepo,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+  });
+  const conversationSessionService = new ConversationSessionService({
+    sessionRepo: conversationSessionRepo,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+  });
+
+  // PLAN §5: the workspace service owns the filesystem watcher that indexes
+  // direct writes; index storage lives in the file_index repository.
+  const indexer = createWorkspaceIndexer({ workspace, fileIndexRepo });
+  indexerInstance = indexer;
+  indexer.begin();
+
   const service = new BotService(
     repo,
     workspace,
@@ -89,10 +140,40 @@ async function setupBotService(): Promise<void> {
   );
   const runtime = new OpenCodeRuntime();
   runtimeInstance = runtime;
-  const runService = new RunService(runRepo, repo, workspace, runtime, { now: () => Date.now() }, {
-    generate: () => randomUUID(),
+  // Posts completed conversation-run summaries into the thread as bot replies.
+  const replyRecorder = new BotReplyRecorder({ conversationService });
+  const runService = new RunService({
+    runRepo,
+    botRepo: repo,
+    workspace,
+    runtime,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+    // PLAN §6.4: resume the stored conversation session by default; rotate it
+    // transparently on expiry/failure.
+    conversationSessions: conversationSessionService,
+    // PLAN §12 M3: succeeded conversation runs post their summary into the
+    // thread as a bot reply — regardless of which path started the run.
+    conversationMessages: replyRecorder,
+  });
+  // Completes the reply loop: human messages in a bot conversation trigger a
+  // run for a participant bot, resuming the stored session.
+  const conversationCoordinator = new ConversationRunCoordinator({
+    conversationService,
+    runService,
+    botRepo: repo,
   });
   closeDb = () => db.close();
+
+  // PLAN §5: sessions expire after 30 days of inactivity — sweep at startup
+  // and then hourly while the app runs.
+  runLogged(conversationSessionService.expireStaleSessions());
+  sessionSweepInterval = setInterval(
+    () => {
+      runLogged(conversationSessionService.expireStaleSessions());
+    },
+    60 * 60 * 1000,
+  );
 
   // Token
   const tokenPath = join(userData, "api-token.txt");
@@ -126,31 +207,43 @@ async function setupBotService(): Promise<void> {
   ipcMain.handle("bebots:workspace:root", async () => {
     return workspace.root;
   });
+  // Local HTTP API coordinates for the renderer (Electron-specific need;
+  // renderer calls the same API as external clients, no IPC business path).
+  ipcMain.handle("bebots:api:endpoint", () => apiEndpoint);
 
-  ipcMain.handle("bebots:runs:start", async (_event, input: { botId: string; prompt: string; timeoutMs?: number; sessionId?: string }) => {
-    const run = await Effect.runPromise(
-      runService.startRun({
-        botId: asBotId(input.botId),
-        prompt: input.prompt,
-        ...(input.timeoutMs !== undefined && { timeoutMs: input.timeoutMs }),
-        ...(input.sessionId !== undefined && { sessionId: input.sessionId }),
-        triggerType: "manual",
-      }),
-    );
-    return run;
-  });
+  ipcMain.handle(
+    "bebots:runs:start",
+    async (
+      _event,
+      input: { botId: string; prompt: string; timeoutMs?: number; sessionId?: string },
+    ) => {
+      const run = await Effect.runPromise(
+        runService.startRun({
+          botId: asBotId(input.botId),
+          prompt: input.prompt,
+          ...(input.timeoutMs !== undefined && { timeoutMs: input.timeoutMs }),
+          ...(input.sessionId !== undefined && { sessionId: input.sessionId }),
+          triggerType: "manual",
+        }),
+      );
+      return run;
+    },
+  );
   ipcMain.handle("bebots:runs:get", async (_event, id: string) => {
     return Effect.runPromise(runService.getRun(asRunId(id)));
   });
-  ipcMain.handle("bebots:runs:list", async (_event, options?: { botId?: string; status?: RunStatus; limit?: number }) => {
-    return Effect.runPromise(
-      runService.listRuns({
-        ...(options?.botId !== undefined && { botId: asBotId(options.botId) }),
-        ...(options?.status !== undefined && { status: options.status }),
-        ...(options?.limit !== undefined && { limit: options.limit }),
-      }),
-    );
-  });
+  ipcMain.handle(
+    "bebots:runs:list",
+    async (_event, options?: { botId?: string; status?: RunStatus; limit?: number }) => {
+      return Effect.runPromise(
+        runService.listRuns({
+          ...(options?.botId !== undefined && { botId: asBotId(options.botId) }),
+          ...(options?.status !== undefined && { status: options.status }),
+          ...(options?.limit !== undefined && { limit: options.limit }),
+        }),
+      );
+    },
+  );
   ipcMain.handle("bebots:runs:cancel", async (_event, id: string) => {
     return Effect.runPromise(runService.cancelRun(asRunId(id as string)));
   });
@@ -158,7 +251,9 @@ async function setupBotService(): Promise<void> {
     return Effect.runPromise(runService.getRunEvents(asRunId(id as string)));
   });
   ipcMain.handle("bebots:runs:await", async (_event, id: string, timeoutMs?: number) => {
-    return Effect.runPromise(runService.awaitRun(asRunId(id as string), timeoutMs as number | undefined));
+    return Effect.runPromise(
+      runService.awaitRun(asRunId(id as string), timeoutMs as number | undefined),
+    );
   });
 
   // HTTP server
@@ -166,6 +261,21 @@ async function setupBotService(): Promise<void> {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
       const pathname = url.pathname;
+
+      // CORS: the renderer runs on a different origin than this API (vite dev
+      // server in dev, file:// in prod), so its fetches are cross-origin and
+      // Chromium enforces CORS — without these headers every renderer request
+      // is blocked before it reaches the routes. The API only listens on
+      // 127.0.0.1 and is bearer-token authed with no ambient credentials, so
+      // a wildcard origin is acceptable (issue #20).
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
 
       // Auth: allow missing token for local dev/tests, validate if present.
       const auth = req.headers.authorization;
@@ -185,17 +295,25 @@ async function setupBotService(): Promise<void> {
 
       // Bots
       if (req.method === "GET" && pathname === "/api/v1/bots") {
-        const list = await Effect.runPromise(service.listBots(url.searchParams.get("includeArchived") === "true"));
+        const list = await Effect.runPromise(
+          service.listBots(url.searchParams.get("includeArchived") === "true"),
+        );
         sendJson(res, 200, list);
         return;
       }
       if (req.method === "POST" && pathname === "/api/v1/bots") {
-        const body = (await readBody(req)) as { name?: string; description?: string; persona?: string };
-        const bot = await Effect.runPromise(service.createBot({
-          name: body.name ?? "New bot",
-          ...(body.description !== undefined && { description: body.description }),
-          ...(body.persona !== undefined && { persona: body.persona }),
-        }));
+        const body = (await readBody(req)) as {
+          name?: string;
+          description?: string;
+          persona?: string;
+        };
+        const bot = await Effect.runPromise(
+          service.createBot({
+            name: body.name ?? "New bot",
+            ...(body.description !== undefined && { description: body.description }),
+            ...(body.persona !== undefined && { persona: body.persona }),
+          }),
+        );
         sendJson(res, 201, bot);
         return;
       }
@@ -208,7 +326,12 @@ async function setupBotService(): Promise<void> {
           return;
         }
         if (req.method === "PATCH") {
-          const body = (await readBody(req)) as { name?: string; description?: string; persona?: string; status?: "active" | "archived" };
+          const body = (await readBody(req)) as {
+            name?: string;
+            description?: string;
+            persona?: string;
+            status?: "active" | "archived";
+          };
           const bot = await Effect.runPromise(service.updateBot(id, body));
           sendJson(res, 200, bot);
           return;
@@ -224,13 +347,21 @@ async function setupBotService(): Promise<void> {
       const startRunMatch = pathname.match(/^\/api\/v1\/bots\/([^/]+)\/runs$/);
       if (startRunMatch && req.method === "POST") {
         const id = asBotId(decodeURIComponent(startRunMatch[1] as string));
-        const body = (await readBody(req)) as { prompt?: string; timeoutMs?: number; sessionId?: string };
+        const body = (await readBody(req)) as {
+          prompt?: string;
+          timeoutMs?: number;
+          sessionId?: string;
+          conversationId?: string;
+        };
         const run = await Effect.runPromise(
           runService.startRun({
             botId: id,
             prompt: body.prompt ?? "",
-            timeoutMs: body.timeoutMs as number | undefined,
-            sessionId: body.sessionId,
+            ...(body.timeoutMs !== undefined && { timeoutMs: body.timeoutMs }),
+            ...(body.sessionId !== undefined && { sessionId: body.sessionId }),
+            ...(body.conversationId !== undefined && {
+              conversationId: asConversationId(body.conversationId),
+            }),
             triggerType: "api",
           } as never),
         );
@@ -262,6 +393,115 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
+      // Conversations
+      if (req.method === "GET" && pathname === "/api/v1/conversations") {
+        const list = await Effect.runPromise(conversationService.listConversations());
+        sendJson(res, 200, list);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/conversations") {
+        const body = (await readBody(req)) as {
+          kind?: "direct" | "team";
+          title?: string;
+          participants?: string[];
+        };
+        const conv = await Effect.runPromise(conversationService.createConversation(body ?? {}));
+        sendJson(res, 201, conv);
+        return;
+      }
+      const convMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)$/);
+      if (convMatch) {
+        const id = asConversationId(decodeURIComponent(convMatch[1] as string));
+        if (req.method === "GET") {
+          const conv = await Effect.runPromise(conversationService.getConversation(id));
+          sendJson(res, conv ? 200 : 404, conv);
+          return;
+        }
+        if (req.method === "PATCH") {
+          const body = (await readBody(req)) as {
+            kind?: "direct" | "team";
+            title?: string;
+            participants?: string[];
+          };
+          const conv = await Effect.runPromise(
+            conversationService.updateConversation(id, body ?? {}),
+          );
+          sendJson(res, 200, conv);
+          return;
+        }
+        if (req.method === "DELETE") {
+          await Effect.runPromise(conversationService.deleteConversation(id));
+          sendJson(res, 204, {});
+          return;
+        }
+      }
+      const convMsgsMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
+      if (convMsgsMatch) {
+        const id = asConversationId(decodeURIComponent(convMsgsMatch[1] as string));
+        if (req.method === "GET") {
+          const msgs = await Effect.runPromise(conversationService.listMessages(id));
+          sendJson(res, 200, msgs);
+          return;
+        }
+        if (req.method === "POST") {
+          const body = (await readBody(req)) as {
+            content?: string;
+            senderType?: string;
+          };
+          // Full reply loop (PLAN §12 M3): a human message in a bot
+          // conversation triggers a reply run; the summary lands back in the
+          // thread when the run completes.
+          const outcome = await Effect.runPromise(
+            conversationCoordinator.sendMessage({
+              conversationId: id,
+              content: body.content ?? "",
+              ...(body.senderType !== undefined && {
+                senderType: body.senderType as "human" | "bot" | "system",
+              }),
+            }),
+          );
+          sendJson(res, 201, { message: outcome.message, runId: outcome.run?.id ?? null });
+          return;
+        }
+      }
+      const convSessionsMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/sessions$/);
+      if (convSessionsMatch) {
+        const id = asConversationId(decodeURIComponent(convSessionsMatch[1] as string));
+        if (req.method === "GET") {
+          const sessions = await Effect.runPromise(
+            conversationSessionService.listSessions({ conversationId: id }),
+          );
+          sendJson(res, 200, sessions);
+          return;
+        }
+        if (req.method === "POST") {
+          const body = (await readBody(req)) as { runtimeSessionId?: string };
+          const sess = await Effect.runPromise(
+            conversationSessionService.createSession({
+              conversationId: id,
+              runtimeSessionId: body.runtimeSessionId ?? "",
+            }),
+          );
+          sendJson(res, 201, sess);
+          return;
+        }
+      }
+
+      // Workspace search over indexed notes/memory/logs (PLAN §7).
+      if (req.method === "GET" && pathname === "/api/v1/notes/search") {
+        const query = url.searchParams.get("q") ?? "";
+        if (query.trim().length === 0) {
+          sendJson(res, 400, { error: "Query parameter q is required" });
+          return;
+        }
+        const botParam = url.searchParams.get("botId");
+        const hits = await Effect.runPromise(
+          indexer.search(query, botParam ? asBotId(botParam) : undefined),
+        );
+        sendJson(res, 200, hits);
+        return;
+      }
+
       sendJson(res, 404, { error: "Not found" });
     } catch (e) {
       sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
@@ -275,6 +515,8 @@ async function setupBotService(): Promise<void> {
   const port = typeof addr === "object" && addr ? addr.port : 0;
   _httpServer = server;
   closeServer = () => server.close();
+  apiPort = port;
+  apiEndpoint = { url: `http://127.0.0.1:${port}`, token };
   fs.writeFileSync(join(userData, "api-port.txt"), String(port), "utf8");
 }
 
@@ -306,9 +548,13 @@ app
   .whenReady()
   .then(async () => {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      // The renderer talks to the local HTTP API on this concrete origin
+      // (narrowed from a blanket host allowance; see issue #13 for further
+      // CSP tightening).
+      const apiOrigin = apiPort !== null ? ` http://127.0.0.1:${apiPort}` : "";
       const csp = isDev
-        ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* ws://localhost:* data:; img-src 'self' data:; font-src 'self' data:"
-        : "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+        ? `default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*${apiOrigin} ws://localhost:* data:; img-src 'self' data:; font-src 'self' data:`
+        : `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${apiOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
       callback({
         responseHeaders: {
           ...details.responseHeaders,
@@ -341,5 +587,10 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   closeServer?.();
   runtimeInstance?.close();
+  indexerInstance?.close();
+  if (sessionSweepInterval !== null) {
+    clearInterval(sessionSweepInterval);
+    sessionSweepInterval = null;
+  }
   closeDb?.();
 });

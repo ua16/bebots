@@ -22,6 +22,7 @@ function installApi(overrides: Partial<BebotsPreloadApi> = {}): BebotsPreloadApi
     platform: "darwin",
     versions: { electron: "33", chrome: "130" },
     workspace: { getRoot: vi.fn(async () => "/tmp/bots") },
+    apiEndpoint: vi.fn(async () => null),
     bots: {
       list: vi.fn(async () => [bot]),
       get: vi.fn(async () => bot),
@@ -66,7 +67,10 @@ describe("App", () => {
   beforeEach(() => {
     delete (window as unknown as { bebots?: unknown }).bebots;
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cleanup();
+  });
 
   it("renders the product title and tagline", () => {
     render(<App />);
@@ -129,5 +133,120 @@ describe("App", () => {
     });
     render(<App />);
     expect(await screen.findByText("Bot One")).toBeTruthy();
+  });
+
+  it("lists conversations and sends a message over the HTTP API", async () => {
+    installApi({
+      apiEndpoint: vi.fn(async () => ({ url: "http://127.0.0.1:4747", token: "tok" })),
+    });
+    let thread:
+      | {
+          id: string;
+          conversationId: string;
+          senderType: "bot" | "human";
+          content: string;
+          createdAt: number;
+        }[]
+      | undefined = undefined;
+    let sent = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input).replace("http://127.0.0.1:4747", "");
+      const ok = (body: unknown, status = 200) =>
+        ({ ok: true, status, json: async () => body }) as unknown as Response;
+      if (path === "/api/v1/conversations") {
+        if (init?.method === "POST") {
+          return ok(
+            {
+              id: "c1",
+              kind: "direct",
+              title: "New conversation",
+              participants: [],
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            201,
+          );
+        }
+        return ok([
+          {
+            id: "c1",
+            kind: "direct",
+            title: "Hello chat",
+            participants: ["b1"],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ]);
+      }
+      if (path === "/api/v1/conversations/c1/messages") {
+        const baseThread = [
+          {
+            id: "m1",
+            conversationId: "c1",
+            senderType: "bot" as const,
+            content: "greetings",
+            createdAt: 1,
+          },
+        ];
+        if (thread === undefined) {
+          thread = baseThread;
+        }
+        if (init?.method === "POST") {
+          sent = true;
+          thread = [
+            ...thread,
+            {
+              id: "m2",
+              conversationId: "c1",
+              senderType: "human" as const,
+              content: "why hello",
+              createdAt: 2,
+            },
+          ];
+          // New contract (issue #18): the reply run is started server-side and
+          // its id comes back with the persisted message.
+          return ok({ message: thread[thread.length - 1], runId: "r1" }, 201);
+        }
+        // After the send, the bot's completed reply run has landed in the
+        // thread — the UI's post-send polling picks it up.
+        if (sent && !thread.some((m) => m.id === "m3")) {
+          thread = [
+            ...thread,
+            {
+              id: "m3",
+              conversationId: "c1",
+              senderType: "bot" as const,
+              content: "here you go",
+              createdAt: 3,
+            },
+          ];
+        }
+        return ok(thread);
+      }
+      return ok([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    // Conversation list arrives over HTTP; opening it loads the thread.
+    fireEvent.click(await screen.findByText("Hello chat"));
+    expect(await screen.findByText("greetings")).toBeTruthy();
+
+    // Send appends over HTTP, refreshes the thread, and the bot's reply run
+    // result arrives via post-send polling (full reply loop, issue #18).
+    const input = screen.getByPlaceholderText("Type a message");
+    fireEvent.change(input, { target: { value: "why hello" } });
+    fireEvent.click(screen.getByText("Send"));
+    expect(await screen.findByText("why hello")).toBeTruthy();
+    await screen.findByText("here you go", {}, { timeout: 5_000 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:4747/api/v1/conversations/c1/messages",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer tok" }),
+        body: JSON.stringify({ content: "why hello" }),
+      }),
+    );
   });
 });

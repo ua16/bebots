@@ -10,6 +10,11 @@ const api: BebotsPreloadApi = {
   workspace: {
     getRoot: () => ipcRenderer.invoke("bebots:workspace:root") as Promise<string>,
   },
+  apiEndpoint: () =>
+    ipcRenderer.invoke("bebots:api:endpoint") as Promise<{
+      url: string;
+      token: string;
+    } | null>,
   bots: {
     list: (includeArchived) =>
       ipcRenderer.invoke("bebots:bots:list", includeArchived) as Promise<
