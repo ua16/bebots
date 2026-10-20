@@ -622,12 +622,12 @@ restarting the app.
 
 ### Milestone 3 --- Conversations and bot knowledge
 
-- [ ] Implement direct conversations and message history in SQLite.
-- [ ] Write persona to `AGENTS.md`; notes under `notes/`, memory under
+- [x] Implement direct conversations and message history in SQLite.
+- [x] Write persona to `AGENTS.md`; notes under `notes/`, memory under
       `memory/`, summaries under `logs/`.
-- [ ] Add filesystem watcher to index direct file writes for search.
-- [ ] Add resumable `ConversationSession` records.
-- [ ] Connect conversations to agent runs without conflating their
+- [x] Add filesystem watcher to index direct file writes for search.
+- [x] Add resumable `ConversationSession` records.
+- [x] Connect conversations to agent runs without conflating their
       identities.
 
 **Done when:** a bot can answer using its configured persona and
