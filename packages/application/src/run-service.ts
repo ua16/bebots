@@ -10,6 +10,7 @@ import type {
   RunTrigger,
   ConversationId,
   ConversationSessionId,
+  TaskId,
 } from "@bebots/domain";
 import { asRunId } from "@bebots/domain";
 import type { AgentRuntime, RunHandle, RunRequest, RuntimeError, RuntimeEvent } from "./runtime.js";
@@ -22,7 +23,7 @@ import type {
   IdGenerator,
   RunRepository,
 } from "./repositories.js";
-import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
+import { NotFoundError, RepositoryError, ServiceError, ValidationError, WorkspaceError } from "./errors.js";
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -48,6 +49,20 @@ export interface RunServiceDeps {
   readonly conversationSessions?: ConversationSessionOps;
   /** Reply recording; conversation runs post their summary into the thread. */
   readonly conversationMessages?: ConversationReplyRecorder;
+  /** Task result recording; runs linked to a task update its status. */
+  readonly taskResults?: TaskResultRecorder;
+  /** Global concurrency limits. */
+  readonly maxConcurrentRuns?: number;
+  readonly maxConcurrentRunsPerBot?: number;
+}
+
+export interface TaskResultRecorder {
+  readonly recordTaskResult: (
+    taskId: string,
+    runId: string,
+    status: "succeeded" | "failed" | "cancelled" | "timed_out",
+    summary?: string,
+  ) => Effect.Effect<void, unknown>;
 }
 
 export interface StartRunInput {
@@ -58,6 +73,8 @@ export interface StartRunInput {
   readonly conversationId?: ConversationId;
   readonly conversationSessionId?: ConversationSessionId;
   readonly triggerType?: RunTrigger;
+  readonly taskId?: TaskId;
+  readonly newSession?: boolean;
 }
 
 function isDeps(value: unknown): value is RunServiceDeps {
@@ -81,6 +98,10 @@ export class RunService {
   private readonly ids: IdGenerator;
   private readonly conversationSessions: ConversationSessionOps | undefined;
   private readonly conversationMessages: ConversationReplyRecorder | undefined;
+  private taskResults: TaskResultRecorder | undefined;
+  private readonly maxConcurrentRuns: number;
+  private readonly maxConcurrentRunsPerBot: number;
+  private paused: boolean = false;
   private readonly handles = new Map<string, RunHandle>();
 
   constructor(
@@ -92,6 +113,9 @@ export class RunService {
     ids?: IdGenerator,
     conversationSessions?: ConversationSessionOps,
     conversationMessages?: ConversationReplyRecorder,
+    taskResults?: TaskResultRecorder,
+    maxConcurrentRuns?: number,
+    maxConcurrentRunsPerBot?: number,
   ) {
     if (isDeps(runRepoOrDeps)) {
       const v = runRepoOrDeps as unknown as Record<string, unknown>;
@@ -103,6 +127,9 @@ export class RunService {
       this.ids = (v.ids ?? v.idGenerator) as IdGenerator;
       this.conversationSessions = v.conversationSessions as ConversationSessionOps | undefined;
       this.conversationMessages = v.conversationMessages as ConversationReplyRecorder | undefined;
+      this.taskResults = v.taskResults as TaskResultRecorder | undefined;
+      this.maxConcurrentRuns = (v.maxConcurrentRuns as number | undefined) ?? 10;
+      this.maxConcurrentRunsPerBot = (v.maxConcurrentRunsPerBot as number | undefined) ?? 3;
     } else {
       this.runRepo = runRepoOrDeps;
       this.botRepo = botRepo as BotRepository;
@@ -112,6 +139,9 @@ export class RunService {
       this.ids = ids as IdGenerator;
       this.conversationSessions = conversationSessions;
       this.conversationMessages = conversationMessages;
+      this.taskResults = taskResults;
+      this.maxConcurrentRuns = maxConcurrentRuns ?? 10;
+      this.maxConcurrentRunsPerBot = maxConcurrentRunsPerBot ?? 3;
     }
   }
 
@@ -119,13 +149,25 @@ export class RunService {
     input: StartRunInput,
   ): Effect.Effect<
     Run,
-    ValidationError | NotFoundError | RepositoryError | WorkspaceError | RuntimeError
+    ValidationError | NotFoundError | RepositoryError | WorkspaceError | RuntimeError | ServiceError
   > {
     const self = this;
     return Effect.gen(function* () {
+      if (self.paused) {
+        return yield* Effect.fail(new ServiceError("Application is paused; new runs are disabled"));
+      }
       const bot = yield* self.botRepo.findById(input.botId);
       if (!bot) {
         return yield* Effect.fail(new NotFoundError("Bot", input.botId));
+      }
+      // Concurrency controls.
+      const running = [...self.handles.keys()];
+      if (running.length >= self.maxConcurrentRuns) {
+        return yield* Effect.fail(new ServiceError("Global run concurrency limit reached"));
+      }
+      const runningForBot = yield* self.runRepo.findAll({ botId: input.botId, status: "running" });
+      if (runningForBot.length >= self.maxConcurrentRunsPerBot) {
+        return yield* Effect.fail(new ServiceError("Per-bot run concurrency limit reached"));
       }
       const prompt = (input.prompt ?? "").trim();
       if (prompt.length === 0) {
@@ -146,7 +188,7 @@ export class RunService {
       let storedSession: ConversationSession | null = null;
       let resumeSessionId: string | undefined = input.sessionId;
       const sessions = self.conversationSessions;
-      if (sessions && input.conversationId) {
+      if (!input.newSession && sessions && input.conversationId) {
         if (input.conversationSessionId) {
           storedSession = yield* sessions.getSession(String(input.conversationSessionId));
           if (!storedSession) {
@@ -174,6 +216,7 @@ export class RunService {
         sessionId: resumeSessionId,
         conversationId: input.conversationId,
         conversationSessionId,
+        taskId: input.taskId,
         timeoutMs,
         createdAt: now,
         updatedAt: now,
@@ -195,6 +238,7 @@ export class RunService {
       // the run when bookkeeping fails (e.g. the record was deleted in a
       // race): failures are logged, never silently swallowed.
       const bookkeeping = Effect.gen(function* () {
+        if (input.newSession) return;
         if (!sessions || !input.conversationId || usedSessionId === undefined) return;
         if (storedSession) {
           if (storedSession.runtimeSessionId !== usedSessionId) {
@@ -260,6 +304,28 @@ export class RunService {
         };
         yield* self.runRepo.update(finalRun);
 
+        // Task result link: if this run was started for a task, update the
+        // task's status and result reference.
+        const taskResults = self.taskResults;
+        if (taskResults && finalRun.taskId !== undefined) {
+          yield* taskResults
+            .recordTaskResult(
+              String(finalRun.taskId),
+              String(finalRun.id),
+              terminalStatus === "succeeded" ? "succeeded" : "failed",
+              finalRun.summary,
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError(
+                  "Recording task result failed",
+                  runId,
+                  describeError(Cause.squash(cause)),
+                ),
+              ),
+            );
+        }
+
         // PLAN §12 M3: a succeeded conversation run posts its answer into the
         // thread as a bot reply — whoever started it. Recording must not be
         // able to take finalization down; failures are logged.
@@ -306,6 +372,7 @@ export class RunService {
         Effect.catchCause((cause) =>
           Effect.logError("Run finalization failed", runId, describeError(Cause.squash(cause))),
         ),
+        Effect.ensuring(Effect.sync(() => self.handles.delete(String(runId)))),
       );
       yield* Effect.forkDetach(finalize);
 
@@ -334,6 +401,7 @@ export class RunService {
       if (handle) {
         yield* self.runtime.cancelRun(handle);
       }
+      self.handles.delete(String(id));
       const updated: Run = {
         ...run,
         status: "cancelled",
@@ -341,12 +409,47 @@ export class RunService {
         updatedAt: self.clock.now(),
       };
       yield* self.runRepo.update(updated) as Effect.Effect<Run, RepositoryError | RuntimeError>;
+      const taskResults = self.taskResults;
+      if (taskResults && run.taskId) {
+        yield* taskResults
+          .recordTaskResult(String(run.taskId), String(run.id), "cancelled")
+          .pipe(Effect.ignore);
+      }
       return updated;
     });
   }
 
   getRunEvents(id: RunId) {
     return this.runRepo.listEvents(id);
+  }
+
+  pause(): void {
+    this.paused = true;
+  }
+
+  resume(): void {
+    this.paused = false;
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  setTaskResults(tr: TaskResultRecorder | undefined): void {
+    this.taskResults = tr;
+  }
+
+  cancelAllRuns(): Effect.Effect<void, RuntimeError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const running = yield* self.runRepo.findAll({ status: "running" }).pipe(
+        Effect.catchCause(() => Effect.succeed([] as readonly Run[])),
+      );
+      for (const run of running) {
+        yield* self.cancelRun(run.id).pipe(Effect.ignore);
+      }
+      self.handles.clear();
+    });
   }
 
   awaitRun(id: RunId, timeoutMs = 300_000): Effect.Effect<Run | null, RepositoryError> {

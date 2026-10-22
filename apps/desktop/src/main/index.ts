@@ -12,6 +12,8 @@ import {
   createSqliteMessageRepository,
   createSqliteConversationSessionRepository,
   createSqliteFileIndexRepository,
+  createSqliteTaskRepository,
+  createSqliteActivityRepository,
 } from "@bebots/persistence";
 import {
   BotService,
@@ -20,9 +22,11 @@ import {
   ConversationSessionService,
   BotReplyRecorder,
   ConversationRunCoordinator,
+  TaskService,
+  ActivityService,
 } from "@bebots/application";
-import type { BotId, RunStatus } from "@bebots/domain";
-import { asBotId, asRunId, asConversationId } from "@bebots/domain";
+import type { BotId, RunStatus, TaskStatus } from "@bebots/domain";
+import { asBotId, asRunId, asConversationId, asTaskId } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
 
@@ -111,6 +115,8 @@ async function setupBotService(): Promise<void> {
   const messageRepo = createSqliteMessageRepository(db);
   const conversationSessionRepo = createSqliteConversationSessionRepository(db);
   const fileIndexRepo = createSqliteFileIndexRepository(db);
+  const taskRepo = createSqliteTaskRepository(db);
+  const activityRepo = createSqliteActivityRepository(db);
 
   const conversationService = new ConversationService({
     conversationRepo,
@@ -138,7 +144,11 @@ async function setupBotService(): Promise<void> {
       generate: () => randomUUID(),
     },
   );
-  const runtime = new OpenCodeRuntime();
+  const extraLogs =
+    process.argv.includes("--show-extra-logs") ||
+    process.env.SHOW_EXTRA_LOGS === "1" ||
+    process.env.SHOW_EXTRA_LOGS === "true";
+  const runtime = new OpenCodeRuntime({ extraLogs });
   runtimeInstance = runtime;
   // Posts completed conversation-run summaries into the thread as bot replies.
   const replyRecorder = new BotReplyRecorder({ conversationService });
@@ -162,6 +172,22 @@ async function setupBotService(): Promise<void> {
     conversationService,
     runService,
     botRepo: repo,
+  });
+  replyRecorder.setTrigger((conversationId, message, senderType, senderId) =>
+    conversationCoordinator.triggerForMessage(conversationId, message, senderType, senderId),
+  );
+  const taskService = new TaskService({
+    taskRepo,
+    botRepo: repo,
+    runService,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+  });
+  runService.setTaskResults(taskService);
+  const activityService = new ActivityService({
+    activityRepo,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
   });
   closeDb = () => db.close();
 
@@ -210,6 +236,26 @@ async function setupBotService(): Promise<void> {
   // Local HTTP API coordinates for the renderer (Electron-specific need;
   // renderer calls the same API as external clients, no IPC business path).
   ipcMain.handle("bebots:api:endpoint", () => apiEndpoint);
+
+  // Tasks (IPC mirrors of the HTTP API; business logic stays in services).
+  ipcMain.handle("bebots:tasks:list", async (_event, options?: { requester?: string; assignee?: string; status?: TaskStatus; limit?: number }) => {
+    return Effect.runPromise(taskService.listTasks(options ?? {}));
+  });
+  ipcMain.handle("bebots:tasks:get", async (_event, id: string) => {
+    return Effect.runPromise(taskService.getTask(id));
+  });
+  ipcMain.handle("bebots:tasks:create", async (_event, input) => {
+    return Effect.runPromise(taskService.createTask(input));
+  });
+  ipcMain.handle("bebots:tasks:assign", async (_event, id: string) => {
+    return Effect.runPromise(taskService.assignTask(id));
+  });
+  ipcMain.handle("bebots:tasks:cancel", async (_event, id: string) => {
+    return Effect.runPromise(taskService.cancelTask(id));
+  });
+  ipcMain.handle("bebots:tasks:delegate", async (_event, input) => {
+    return Effect.runPromise(taskService.delegate(input));
+  });
 
   ipcMain.handle(
     "bebots:runs:start",
@@ -485,6 +531,173 @@ async function setupBotService(): Promise<void> {
           sendJson(res, 201, sess);
           return;
         }
+      }
+
+      // Tasks
+      if (req.method === "GET" && pathname === "/api/v1/tasks") {
+        const list = await Effect.runPromise(
+          taskService.listTasks({
+            ...(url.searchParams.get("requester") && { requester: url.searchParams.get("requester")! }),
+            ...(url.searchParams.get("assignee") && { assignee: url.searchParams.get("assignee")! }),
+            ...(url.searchParams.get("status") && {
+              status: url.searchParams.get("status") as TaskStatus,
+            }),
+            ...(url.searchParams.get("limit") && {
+              limit: Number(url.searchParams.get("limit")),
+            }),
+          }),
+        );
+        sendJson(res, 200, list);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/tasks") {
+        const body = (await readBody(req)) as {
+          requester?: string | null;
+          assignee?: string;
+          description?: string;
+          inputRefs?: string[];
+          priority?: number;
+          deadline?: number;
+          depth?: number;
+          idempotencyKey?: string;
+          assign?: boolean;
+        };
+        const task = await Effect.runPromise(
+          taskService.createTask({
+            ...(body.requester !== undefined && { requester: body.requester }),
+            assignee: body.assignee ?? "",
+            description: body.description ?? "",
+            ...(body.inputRefs !== undefined && { inputRefs: body.inputRefs }),
+            ...(body.priority !== undefined && { priority: body.priority }),
+            ...(body.deadline !== undefined && { deadline: body.deadline }),
+            ...(body.depth !== undefined && { depth: body.depth }),
+            ...(body.idempotencyKey !== undefined && { idempotencyKey: body.idempotencyKey }),
+          }),
+        );
+        if (body.assign) {
+          const started = await Effect.runPromise(taskService.assignTask(String(task.id)));
+          sendJson(res, 201, started);
+          return;
+        }
+        sendJson(res, 201, task);
+        return;
+      }
+      const taskMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)$/);
+      if (taskMatch) {
+        const id = asTaskId(decodeURIComponent(taskMatch[1] as string));
+        if (req.method === "GET") {
+          const task = await Effect.runPromise(taskService.getTask(String(id)));
+          sendJson(res, task ? 200 : 404, task);
+          return;
+        }
+      }
+      const taskAssignMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/assign$/);
+      if (taskAssignMatch && req.method === "POST") {
+        const id = asTaskId(decodeURIComponent(taskAssignMatch[1] as string));
+        const task = await Effect.runPromise(taskService.assignTask(String(id)));
+        sendJson(res, 200, task);
+        return;
+      }
+      const taskCancelMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/cancel$/);
+      if (taskCancelMatch && req.method === "POST") {
+        const id = asTaskId(decodeURIComponent(taskCancelMatch[1] as string));
+        const task = await Effect.runPromise(taskService.cancelTask(String(id)));
+        sendJson(res, 200, task);
+        return;
+      }
+      // Delegate (create+assign+run) convenience
+      if (req.method === "POST" && pathname === "/api/v1/tasks/delegate") {
+        const body = (await readBody(req)) as {
+          requester?: string | null;
+          assignee?: string;
+          description?: string;
+          assignees?: string[];
+          parallel?: boolean;
+        };
+        if (body.parallel && body.assignees) {
+          const tasks = await Effect.runPromise(
+            taskService.delegateParallel(
+              body.assignees.map((a) => ({
+                requester: body.requester ?? null,
+                assignee: a,
+                description: body.description ?? "",
+              })),
+            ),
+          );
+          sendJson(res, 201, tasks);
+          return;
+        }
+        const task = await Effect.runPromise(
+          taskService.delegate({
+            requester: body.requester ?? null,
+            assignee: body.assignee ?? "",
+            description: body.description ?? "",
+          }),
+        );
+        sendJson(res, 201, task);
+        return;
+      }
+
+      // Activity feed
+      if (req.method === "GET" && pathname === "/api/v1/activity") {
+        const list = await Effect.runPromise(
+          activityService.list({
+            ...(url.searchParams.get("type") && { type: url.searchParams.get("type")! }),
+            ...(url.searchParams.get("entityType") && {
+              entityType: url.searchParams.get("entityType")!,
+            }),
+            ...(url.searchParams.get("entityId") && {
+              entityId: url.searchParams.get("entityId")!,
+            }),
+            ...(url.searchParams.get("limit") && {
+              limit: Number(url.searchParams.get("limit")),
+            }),
+          }),
+        );
+        sendJson(res, 200, list);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/activity") {
+        const body = (await readBody(req)) as {
+          type?: string;
+          entityType?: string;
+          entityId?: string;
+          actorId?: string | null;
+          payload?: unknown;
+        };
+        const ev = await Effect.runPromise(
+          activityService.record({
+            type: body.type ?? "event",
+            entityType: body.entityType ?? "unknown",
+            entityId: body.entityId ?? "",
+            ...(body.actorId !== undefined && { actorId: body.actorId }),
+            payload: body.payload,
+          }),
+        );
+        sendJson(res, 201, ev);
+        return;
+      }
+
+      // Global pause/stop
+      if (req.method === "GET" && pathname === "/api/v1/control/status") {
+        sendJson(res, 200, { paused: runService.isPaused() });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/control/pause") {
+        runService.pause();
+        sendJson(res, 200, { paused: true });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/control/resume") {
+        runService.resume();
+        sendJson(res, 200, { paused: false });
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/control/stop") {
+        await Effect.runPromise(runService.cancelAllRuns());
+        runService.pause();
+        sendJson(res, 200, { paused: true });
+        return;
       }
 
       // Workspace search over indexed notes/memory/logs (PLAN §7).

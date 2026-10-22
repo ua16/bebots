@@ -636,17 +636,17 @@ and run history.
 
 ### Milestone 4 --- Messaging and bounded delegation
 
-- [ ] Add bot-to-bot and team conversations.
-- [ ] Trigger recipient sessions on bot-to-bot messages (new session in
+- [x] Add bot-to-bot and team conversations.
+- [x] Trigger recipient sessions on bot-to-bot messages (new session in
       recipient home) and on explicit user mentions.
-- [ ] Add task records, assignment, state transitions, and result
+- [x] Add task records, assignment, state transitions, and result
       links.
-- [ ] Support parallel runs across multiple bots.
-- [ ] Provide an application tool/API for bots to send messages and
+- [x] Support parallel runs across multiple bots.
+- [x] Provide an application tool/API for bots to send messages and
       create tasks.
-- [ ] Add delegation limits, loop prevention, and concurrency
+- [x] Add delegation limits, loop prevention, and concurrency
       controls.
-- [ ] Add activity feed and global pause/stop behavior.
+- [x] Add activity feed and global pause/stop behavior.
 
 **Done when:** one bot can assign a bounded task to another, the
 recipient can complete it, and the task/result is visible and auditable.

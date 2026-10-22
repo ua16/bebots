@@ -28,6 +28,24 @@ export function asRunId(value: string): RunId {
   return value as RunId;
 }
 
+export type TaskId = string & { readonly __brand: "TaskId" };
+
+export function asTaskId(value: string): TaskId {
+  if (value.trim().length === 0) {
+    throw new Error("TaskId cannot be empty");
+  }
+  return value as TaskId;
+}
+
+export type ActivityId = string & { readonly __brand: "ActivityId" };
+
+export function asActivityId(value: string): ActivityId {
+  if (value.trim().length === 0) {
+    throw new Error("ActivityId cannot be empty");
+  }
+  return value as ActivityId;
+}
+
 export const RUN_STATUSES = [
   "queued",
   "running",
@@ -121,6 +139,7 @@ export interface Run {
   readonly sessionId?: string;
   readonly conversationId?: ConversationId;
   readonly conversationSessionId?: ConversationSessionId;
+  readonly taskId?: TaskId;
   readonly timeoutMs: number;
   readonly startedAt?: number;
   readonly endedAt?: number;
@@ -155,6 +174,33 @@ const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
 
 export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
   return TASK_TRANSITIONS[from].includes(to);
+}
+
+export interface Task {
+  readonly id: TaskId;
+  readonly requester: string | null;
+  readonly assignee: string;
+  readonly description: string;
+  readonly inputRefs: readonly string[];
+  readonly priority: number;
+  readonly status: TaskStatus;
+  readonly deadline?: number;
+  readonly resultRunId?: RunId;
+  readonly resultSummary?: string;
+  readonly depth: number;
+  readonly idempotencyKey?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface ActivityEvent {
+  readonly id: ActivityId;
+  readonly type: string;
+  readonly entityType: string;
+  readonly entityId: string;
+  readonly actorId?: string | null;
+  readonly payload?: unknown;
+  readonly createdAt: number;
 }
 
 export const APPROVAL_STATUSES = ["pending", "approved", "rejected", "expired"] as const;

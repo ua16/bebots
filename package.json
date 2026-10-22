@@ -9,7 +9,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun run --cwd apps/desktop dev",
+    "dev": "node scripts/dev.cjs",
     "build": "bun run --cwd apps/desktop build",
     "typecheck": "tsc -b",
     "lint": "eslint .",

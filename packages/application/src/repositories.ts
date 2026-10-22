@@ -1,5 +1,5 @@
 import type { Bot, BotId } from "@bebots/domain";
-import type { Run, RunId, RunStatus } from "@bebots/domain";
+import type { Run, RunId, RunStatus, Task, TaskId, TaskStatus, ActivityEvent } from "@bebots/domain";
 import type {
   Conversation,
   ConversationId,
@@ -126,6 +126,30 @@ export interface FileIndexRepository {
     query: string,
     botId?: BotId,
   ) => Effect.Effect<readonly FileIndexSearchHit[], RepositoryError>;
+}
+
+export interface TaskRepository {
+  readonly create: (task: Task) => Effect.Effect<Task, RepositoryError>;
+  readonly findById: (id: TaskId) => Effect.Effect<Task | null, RepositoryError>;
+  readonly findAll: (options?: {
+    readonly requester?: string;
+    readonly assignee?: string;
+    readonly status?: TaskStatus;
+    readonly limit?: number;
+  }) => Effect.Effect<readonly Task[], RepositoryError>;
+  readonly update: (task: Task) => Effect.Effect<Task, RepositoryError | NotFoundError>;
+  readonly delete: (id: TaskId) => Effect.Effect<void, RepositoryError | NotFoundError>;
+  readonly findByIdempotencyKey: (key: string) => Effect.Effect<Task | null, RepositoryError>;
+}
+
+export interface ActivityRepository {
+  readonly create: (event: ActivityEvent) => Effect.Effect<ActivityEvent, RepositoryError>;
+  readonly findAll: (options?: {
+    readonly type?: string;
+    readonly entityType?: string;
+    readonly entityId?: string;
+    readonly limit?: number;
+  }) => Effect.Effect<readonly ActivityEvent[], RepositoryError>;
 }
 
 export interface Clock {

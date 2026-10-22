@@ -1,5 +1,6 @@
+/* eslint-disable @typescript-eslint/no-this-alias */
 import { Cause, Effect } from "effect";
-import type { Message, MessageSenderType, Run } from "@bebots/domain";
+import type { Conversation, Message, MessageSenderType, Run } from "@bebots/domain";
 import { asBotId } from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
@@ -27,9 +28,28 @@ export interface ConversationReplyRecorder {
  */
 export class BotReplyRecorder implements ConversationReplyRecorder {
   private readonly conversationService: ConversationService;
+  private trigger:
+    | ((
+        conversationId: string,
+        message: Message,
+        senderType: MessageSenderType,
+        senderId: string | null,
+      ) => Effect.Effect<void, unknown>)
+    | null = null;
 
   constructor(deps: { readonly conversationService: ConversationService }) {
     this.conversationService = deps.conversationService;
+  }
+
+  setTrigger(
+    trigger: (
+      conversationId: string,
+      message: Message,
+      senderType: MessageSenderType,
+      senderId: string | null,
+    ) => Effect.Effect<void, unknown>,
+  ): void {
+    this.trigger = trigger;
   }
 
   recordBotReply(
@@ -38,14 +58,18 @@ export class BotReplyRecorder implements ConversationReplyRecorder {
     content: string,
   ): Effect.Effect<void, ValidationError | RepositoryError | ServiceError> {
     const conversationService = this.conversationService;
+    const trigger = this.trigger;
     return Effect.gen(function* () {
       if (content.trim().length === 0) return;
-      yield* conversationService.addMessage({
+      const message = yield* conversationService.addMessage({
         conversationId,
         content,
         senderType: "bot",
         senderId: botId,
       });
+      if (trigger) {
+        yield* trigger(conversationId, message, "bot", botId).pipe(Effect.ignore);
+      }
     });
   }
 }
@@ -54,6 +78,8 @@ export interface SendMessageResult {
   readonly message: Message;
   /** Reply run started for the message, if any; null when not triggered or the run could not start. */
   readonly run: Run | null;
+  /** All runs triggered by this message (parallel delegation support). */
+  readonly runs: readonly Run[];
 }
 
 export interface ConversationRunCoordinatorDeps {
@@ -70,10 +96,13 @@ export interface ConversationRunCoordinatorDeps {
  * by the coordinator itself, so any conversation run gets recorded the same
  * way.
  */
+export const MAX_MESSAGE_HOP_DEPTH = 3;
+
 export class ConversationRunCoordinator {
   private readonly conversationService: ConversationService;
   private readonly runService: RunService;
   private readonly botRepo: BotRepository;
+  private readonly hopCounts = new Map<string, number>();
 
   constructor(deps: ConversationRunCoordinatorDeps) {
     this.conversationService = deps.conversationService;
@@ -95,8 +124,7 @@ export class ConversationRunCoordinator {
     NotFoundError | ValidationError | RepositoryError | ServiceError
   > {
     const conversationService = this.conversationService;
-    const runService = this.runService;
-    const botRepo = this.botRepo;
+    const self = this;
     return Effect.gen(function* () {
       const conversation = yield* conversationService.getConversation(input.conversationId);
       if (!conversation) {
@@ -104,44 +132,127 @@ export class ConversationRunCoordinator {
       }
       const message = yield* conversationService.addMessage(input);
       const senderType: MessageSenderType = input.senderType ?? "human";
-      if (senderType !== "human") {
-        return { message, run: null };
+      const senderId = input.senderId ? String(input.senderId) : null;
+
+      const runs = yield* self.processPersistedMessage(conversation, message, senderType, senderId);
+
+      return { message, run: runs[0] ?? null, runs };
+    }) as Effect.Effect<SendMessageResult, NotFoundError | ValidationError | RepositoryError | ServiceError>;
+  }
+
+  /**
+   * Resolve recipients for an already-persisted message and trigger their runs.
+   * Shared by `sendMessage` and bot-reply mention handling.
+   */
+  processPersistedMessage(
+    conversation: Conversation,
+    message: Message,
+    senderType: MessageSenderType,
+    senderId: string | null,
+  ): Effect.Effect<readonly Run[], NotFoundError | ValidationError | RepositoryError | ServiceError> {
+    const runService = this.runService;
+    const botRepo = this.botRepo;
+    const self = this;
+    return Effect.gen(function* () {
+      // Loop prevention: bot-triggered messages only propagate up to
+      // MAX_MESSAGE_HOP_DEPTH hops.
+      let currentHops = self.hopCounts.get(String(conversation.id)) ?? 0;
+      if (senderType === "human") currentHops = 0;
+      const canPropagate =
+        senderType !== "system" && currentHops < MAX_MESSAGE_HOP_DEPTH;
+
+      // Resolve recipient bots.
+      const recipients = new Map<string, { id: string; name: string }>();
+
+      // Explicit mentions (@botId or @botName) work for any sender.
+      const mentionTokens = [...(message.content.match(/@([A-Za-z0-9_-]+)/g) ?? [])].map((t) =>
+        t.slice(1),
+      );
+      for (const token of mentionTokens) {
+        // Try by id first.
+        let bot = yield* botRepo.findById(asBotId(token)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+        if (!bot) {
+          // Try by name.
+          const all = yield* botRepo.findAll();
+          bot = all.find((b) => b.name === token && b.status === "active") ?? null;
+        }
+        if (bot && bot.status === "active" && String(bot.id) !== senderId) {
+          recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
+        }
       }
 
-      const findFirstBotParticipant = Effect.gen(function* () {
+      // Human messages trigger the first active bot participant (M3 behavior).
+      if (senderType === "human" && canPropagate) {
         for (const participant of conversation.participants) {
           const raw = participant.trim();
           if (raw.length === 0) continue;
-          const bot = yield* botRepo.findById(asBotId(raw));
-          if (bot && bot.status === "active") return bot;
+          const bot = yield* botRepo.findById(asBotId(raw)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+          if (bot && bot.status === "active") {
+            recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
+            break; // only first, matching M3
+          }
         }
-        return null;
-      });
+      }
 
-      return yield* Effect.gen(function* () {
-        const bot = yield* findFirstBotParticipant;
-        if (!bot) return { message, run: null };
-        const run = yield* runService.startRun({
-          botId: bot.id,
-          prompt: message.content,
-          conversationId: conversation.id,
-          triggerType: "message",
-        });
-        return { message, run };
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.gen(function* () {
-            // A reply run that cannot start never fails the delivered
-            // message: log it and report `run: null`.
-            yield* Effect.logError(
-              "Conversation reply run failed to start",
-              message.id,
-              Cause.squash(cause),
-            );
-            return { message, run: null };
-          }),
-        ),
+      // Bot messages trigger all OTHER active bot participants (bot-to-bot).
+      if (senderType === "bot" && senderId && canPropagate) {
+        for (const participant of conversation.participants) {
+          const raw = participant.trim();
+          if (raw.length === 0) continue;
+          const bot = yield* botRepo.findById(asBotId(raw)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+          if (bot && bot.status === "active" && String(bot.id) !== senderId) {
+            recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
+          }
+        }
+      }
+
+      if (recipients.size === 0 || !canPropagate) {
+        return [] as readonly Run[];
+      }
+
+      // Hop bookkeeping.
+      self.hopCounts.set(String(conversation.id), currentHops + 1);
+
+      const recipientList = [...recipients.values()];
+      const startOne = (recipient: { id: string; name: string }) =>
+        runService
+          .startRun({
+            botId: asBotId(recipient.id),
+            prompt: message.content,
+            conversationId: conversation.id,
+            triggerType: "message",
+            newSession: senderType === "bot",
+          })
+          .pipe(
+            Effect.catchCause((cause) => {
+              void Effect.runPromise(
+                Effect.logError("Conversation reply run failed to start", message.id, Cause.squash(cause)),
+              );
+              return Effect.succeed(null as Run | null);
+            }),
+          );
+
+      const runs = (yield* Effect.all(recipientList.map(startOne), { concurrency: "unbounded" })).filter(
+        (r): r is Run => r !== null,
       );
+
+      return runs as readonly Run[];
+    }) as Effect.Effect<readonly Run[], NotFoundError | ValidationError | RepositoryError | ServiceError>;
+  }
+
+  /** Trigger recipients for an already-persisted message (used by bot replies). */
+  triggerForMessage(
+    conversationId: string,
+    message: Message,
+    senderType: MessageSenderType,
+    senderId: string | null,
+  ): Effect.Effect<void, NotFoundError | ValidationError | RepositoryError | ServiceError> {
+    const conversationService = this.conversationService;
+    const self = this;
+    return Effect.gen(function* () {
+      const conversation = yield* conversationService.getConversation(conversationId);
+      if (!conversation) return;
+      yield* self.processPersistedMessage(conversation, message, senderType, senderId);
     });
   }
 }

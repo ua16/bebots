@@ -79,6 +79,10 @@ export function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<readonly ApiMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionStart, setMentionStart] = useState<number | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
   // Run history for the selected bot
   const [runHistory, setRunHistory] = useState<readonly ApiRun[]>([]);
   // Chat surface state: toggled bots panel, reply-run indicator, notices.
@@ -185,7 +189,7 @@ export function App() {
             setThreadNotice(null);
             return;
           }
-          if (attempts >= 20) {
+          if (attempts >= 40) {
             setPendingReply(false);
             setThreadNotice(
               "No reply yet — the run may still be in flight or failed. Check run history.",
@@ -210,6 +214,9 @@ export function App() {
         { method: "POST", body: { content: draft } },
       );
       setDraft("");
+      setMentionQuery(null);
+      setMentionStart(null);
+      setMentionIndex(0);
       setThreadNotice(null);
       await refreshMessages(activeConversationId);
       if (reply.runId !== null) {
@@ -333,6 +340,47 @@ export function App() {
     }
   };
 
+  const mentionSuggestions =
+    mentionQuery === null
+      ? []
+      : bots.filter(
+          (b) =>
+            b.name.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+            b.id.toLowerCase().includes(mentionQuery.toLowerCase()),
+        );
+
+  const selectMention = useCallback(
+    (bot: BebotsBot) => {
+      if (mentionStart === null || mentionQuery === null) return;
+      const before = draft.slice(0, mentionStart);
+      const after = draft.slice(mentionStart + 1 + mentionQuery.length);
+      setDraft(`${before}@${bot.id} ${after}`);
+      setMentionQuery(null);
+      setMentionStart(null);
+      setMentionIndex(0);
+      composerInputRef.current?.focus();
+    },
+    [draft, mentionQuery, mentionStart],
+  );
+
+  const renderMentionContent = (content: string) => {
+    const parts = content.split(/(@[A-Za-z0-9_-]+)/g);
+    return parts.map((part, index) => {
+      const match = part.match(/^@([A-Za-z0-9_-]+)$/);
+      if (match) {
+        const mentioned = bots.find((b) => b.id === match[1]);
+        if (mentioned) {
+          return (
+            <span key={index} className="mention">
+              @<span className="mention-name">{mentioned.name}</span>
+            </span>
+          );
+        }
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
+
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
   const botName = (id: string | null | undefined) => {
     if (id === null || id === undefined) return "Bot";
@@ -416,7 +464,7 @@ export function App() {
                     <span className="message-sender">
                       {m.senderType === "human" ? "You" : botName(m.senderId)}
                     </span>
-                    <span className="message-content">{m.content}</span>
+                    <span className="message-content">{renderMentionContent(m.content)}</span>
                     <time className="message-time">
                       {new Date(m.createdAt).toLocaleTimeString([], {
                         hour: "2-digit",
@@ -436,11 +484,86 @@ export function App() {
                   void handleSendMessage();
                 }}
               >
+                {mentionQuery !== null && mentionSuggestions.length > 0 && (
+                  <div
+                    className="mention-popup mention-frame mention-menu"
+                    role="listbox"
+                    aria-label="Mention suggestions"
+                    data-testid="mention-suggestions"
+                  >
+                    <ul className="mention-suggestions">
+                      {mentionSuggestions.map((b, i) => (
+                        <li key={b.id}>
+                          <button
+                            type="button"
+                            className={i === mentionIndex ? "highlighted" : undefined}
+                            aria-selected={i === mentionIndex}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => selectMention(b)}
+                          >
+                            {b.name}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <input
+                  ref={composerInputRef}
                   value={draft}
                   placeholder="Type a message"
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setDraft(value);
+                    const caret = e.target.selectionStart ?? value.length;
+                    const idx = value.lastIndexOf("@", caret - 1);
+                    if (idx !== -1) {
+                      const between = value.slice(idx + 1, caret);
+                      if (!/\s/.test(between)) {
+                        if (idx === 0 || /\s/.test(value[idx - 1] ?? "")) {
+                          setMentionQuery(between);
+                          setMentionStart(idx);
+                          setMentionIndex(0);
+                        } else {
+                          setMentionQuery(null);
+                          setMentionStart(null);
+                        }
+                      } else {
+                        setMentionQuery(null);
+                        setMentionStart(null);
+                      }
+                    } else {
+                      setMentionQuery(null);
+                      setMentionStart(null);
+                    }
+                  }}
                   onKeyDown={(e) => {
+                    if (mentionQuery !== null && mentionSuggestions.length > 0) {
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setMentionIndex((i) => (i + 1) % mentionSuggestions.length);
+                        return;
+                      }
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setMentionIndex((i) =>
+                          (i - 1 + mentionSuggestions.length) % mentionSuggestions.length,
+                        );
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        e.preventDefault();
+                        const chosen = mentionSuggestions[mentionIndex] ?? mentionSuggestions[0];
+                        if (chosen) selectMention(chosen);
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setMentionQuery(null);
+                        setMentionStart(null);
+                        return;
+                      }
+                    }
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       void handleSendMessage();

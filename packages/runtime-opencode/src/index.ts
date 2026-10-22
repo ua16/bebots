@@ -40,6 +40,8 @@ function sleep(ms: number): Promise<void> {
 export interface OpenCodeRuntimeOptions {
   readonly command?: string;
   readonly baseDirectory?: string;
+  /** When true, log every request/response to the OpenCode API. */
+  readonly extraLogs?: boolean;
 }
 
 export class OpenCodeRuntime implements AgentRuntime {
@@ -52,6 +54,7 @@ export class OpenCodeRuntime implements AgentRuntime {
 
   private readonly command: string;
   private readonly baseDirectory: string;
+  private readonly extraLogs: boolean;
   private server: ServerInfo | null = null;
   private serverStarting: Promise<ServerInfo> | null = null;
   private readonly runs = new Map<string, RunState>();
@@ -59,6 +62,7 @@ export class OpenCodeRuntime implements AgentRuntime {
   constructor(options: OpenCodeRuntimeOptions = {}) {
     this.command = options.command ?? "opencode";
     this.baseDirectory = options.baseDirectory ?? process.cwd();
+    this.extraLogs = options.extraLogs ?? false;
   }
 
   private async ensureServer(): Promise<ServerInfo> {
@@ -138,13 +142,27 @@ export class OpenCodeRuntime implements AgentRuntime {
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
+    if (this.extraLogs) {
+      console.log(`[opencode] -> ${method} ${path}`, body !== undefined ? body : "");
+    }
     const res = await fetch(`${server.url}${path}`, init);
     if (!res.ok) {
       const text = await res.text();
+      if (this.extraLogs) {
+        console.log(`[opencode] <- ${res.status} ${path}`, text);
+      }
       throw new Error(`OpenCode API ${method} ${path} failed: ${res.status} ${text}`);
     }
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204) {
+      if (this.extraLogs) {
+        console.log(`[opencode] <- 204 ${path}`);
+      }
+      return undefined as T;
+    }
     const json = (await res.json()) as { data?: T };
+    if (this.extraLogs) {
+      console.log(`[opencode] <- ${res.status} ${path}`, json);
+    }
     return json && typeof json === "object" && "data" in json
       ? (json as { data: T }).data
       : (json as T);
@@ -209,8 +227,12 @@ export class OpenCodeRuntime implements AgentRuntime {
         const prior = Array.isArray(priorMessages)
           ? priorMessages
           : ((priorMessages as { data?: unknown[] })?.data ?? []);
-        const priorIds = new Set(prior.map((m) => String((m as { id?: unknown })?.id)));
-
+        const priorIds = new Set(
+          prior
+            .map((m) => (m as { id?: unknown })?.id)
+            .filter((id): id is string | number => id !== undefined && id !== null)
+            .map((id) => String(id)),
+        );
         // Send prompt.
         await self.request(server, "POST", `/api/session/${sessionId}/prompt`, {
           text: request.prompt,
@@ -235,22 +257,70 @@ export class OpenCodeRuntime implements AgentRuntime {
               // before the prompt belongs to earlier runs (issue #21) — the
               // first assistant reply in session history is the original
               // run's, not this run's.
-              const fresh = (list as any[]).filter((m: any) => !priorIds.has(String(m?.id)));
+              const fresh = (list as any[]).filter((m: any) => {
+                if (m?.id === undefined || m?.id === null) return true;
+                return !priorIds.has(String(m.id));
+              });
               const idle = fresh.find((m: any) => m?.type === "idle");
-              if (idle) {
-                const assistant = fresh.find((m: any) => m?.type === "assistant");
-                // Only the assistant's actual text — reasoning parts are
-                // internal model thoughts, not chat content.
-                const text =
-                  assistant?.content
-                    ?.filter((c: any) => c?.type === undefined || c?.type === "text")
-                    .map((c: any) => c?.text)
-                    .filter(Boolean)
-                    .join("\n") ?? "";
+              // Some OpenCode builds surface completion on the assistant
+              // message itself (finish) rather than a separate idle entry;
+              // treat either as terminal so runs do not hang forever.
+              const completedAssistant = fresh.find(
+                (m: any) =>
+                  m?.type === "assistant" &&
+                  (m?.finish === "stop" || m?.finish === "length"),
+              );
+              const terminal = idle ?? (completedAssistant ? { outcome: "succeeded" } : undefined);
+              if (terminal) {
+                // Prefer the most recent assistant that actually carries text;
+                // fall back to aggregating every fresh assistant's text parts
+                // so a tool-only intermediate reply never blanks the summary.
+                const assistants = fresh
+                  .filter((m: any) => m?.type === "assistant")
+                  .sort((a: any, b: any) => {
+                    const ta = a?.time?.created ?? a?.createdAt ?? 0;
+                    const tb = b?.time?.created ?? b?.createdAt ?? 0;
+                    return (tb as number) - (ta as number);
+                  });
+                const extractText = (m: any): string => {
+                  if (!m) return "";
+                  if (Array.isArray(m.content)) {
+                    return m.content
+                      .filter((c: any) => c && (c.type === undefined || c.type === "text" || c.type === "output_text"))
+                      .map((c: any) => c?.text ?? c?.content ?? c?.value)
+                      .filter(Boolean)
+                      .join("\n");
+                  }
+                  if (typeof m.content === "string") return m.content;
+                  if (typeof m.text === "string") return m.text;
+                  return "";
+                };
+                let text = "";
+                for (const a of assistants) {
+                  const t = extractText(a);
+                  if (t.trim().length > 0) {
+                    text = t;
+                    break;
+                  }
+                }
+                if (text.trim().length === 0) {
+                  text = assistants.map(extractText).filter(Boolean).join("\n");
+                }
+                // Never post an empty summary for a succeeded run — the reply
+                // loop requires non-empty content to record a bot reply.
+                if (text.trim().length === 0 && (idle?.outcome === "succeeded" || !idle)) {
+                  text = "(no response)";
+                }
+                const exitCode =
+                  idle !== undefined
+                    ? idle.outcome === "succeeded"
+                      ? 0
+                      : 1
+                    : 0;
                 if (!state.cancelled) {
                   state.events.push({ _tag: "completed", summary: text });
                   state.result = {
-                    exitCode: idle.outcome === "succeeded" ? 0 : 1,
+                    exitCode,
                     summary: text,
                     sessionId,
                   };

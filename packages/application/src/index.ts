@@ -5,3 +5,5 @@ export * from "./bot-service.js";
 export * from "./run-service.js";
 export * from "./conversation-service.js";
 export * from "./conversation-run-coordinator.js";
+export * from "./task-service.js";
+export * from "./activity-service.js";

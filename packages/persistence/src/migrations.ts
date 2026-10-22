@@ -151,6 +151,49 @@ const MIGRATIONS: readonly Migration[] = [
         ON file_index (bot_id, path);
     `,
   },
+  {
+    version: 11,
+    name: "create_tasks",
+    sql: `
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        requester TEXT,
+        assignee TEXT NOT NULL,
+        description TEXT NOT NULL,
+        input_refs TEXT NOT NULL DEFAULT '[]',
+        priority INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        deadline INTEGER,
+        result_run_id TEXT,
+        result_summary TEXT,
+        depth INTEGER NOT NULL DEFAULT 0,
+        idempotency_key TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key ON tasks (idempotency_key);
+    `,
+  },
+  {
+    version: 12,
+    name: "create_activity_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS activity_events (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        actor_id TEXT,
+        payload TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `,
+  },
+  {
+    version: 13,
+    name: "add_run_task_id",
+    sql: `ALTER TABLE runs ADD COLUMN task_id TEXT;`,
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {

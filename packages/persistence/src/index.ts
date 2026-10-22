@@ -6,6 +6,8 @@ export * from "./sqlite-conversation-repository.js";
 export * from "./sqlite-message-repository.js";
 export * from "./sqlite-conversation-session-repository.js";
 export * from "./sqlite-file-index-repository.js";
+export * from "./sqlite-task-repository.js";
+export * from "./sqlite-activity-repository.js";
 
 export type {
   BotRepository,

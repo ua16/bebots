@@ -189,6 +189,22 @@
   word-break: break-word;
 }
 
+.mention {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-weight: 600;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.message-human .mention {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
 .message-time {
   font-size: 0.65rem;
   opacity: 0.6;
@@ -215,10 +231,59 @@
 /* -------------------------------------------------------------- composer */
 
 .composer {
+  position: relative;
   display: flex;
   gap: 0.5rem;
   padding: 0.75rem 1.25rem;
   border-top: 1px solid #e5e7eb;
+}
+
+.mention-popup,
+.mention-frame,
+.mention-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 1.25rem;
+  right: 1.25rem;
+  margin-bottom: 0.5rem;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+.mention-suggestions {
+  list-style: none;
+  padding: 0.25rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.mention-suggestions li button {
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  background: transparent;
+  color: #111827;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mention-suggestions li button:hover {
+  background: #f8f8f8;
+}
+
+.mention-suggestions li button.highlighted,
+.mention-suggestions li button[aria-selected="true"] {
+  background: #e8f5fa;
+  color: #1264a3;
 }
 
 .composer input {

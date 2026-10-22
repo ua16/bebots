@@ -6,6 +6,7 @@ import type {
   RunStatus,
   ConversationId,
   ConversationSessionId,
+  TaskId,
 } from "@bebots/domain";
 import { asBotId, asRunId } from "@bebots/domain";
 import type { RunRepository } from "@bebots/application";
@@ -27,6 +28,7 @@ interface RunRow {
   error: string | null;
   conversation_id: string | null;
   conversation_session_id: string | null;
+  task_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -49,6 +51,7 @@ function rowToRun(row: RunRow): Run {
     conversationSessionId: row.conversation_session_id
       ? (row.conversation_session_id as ConversationSessionId)
       : undefined,
+    taskId: row.task_id ? (row.task_id as TaskId) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   } as Run;
@@ -66,8 +69,8 @@ export class SqliteRunRepository implements RunRepository {
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, conversation_id, conversation_session_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, conversation_id, conversation_session_id, task_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           run.id,
           run.botId,
@@ -83,6 +86,7 @@ export class SqliteRunRepository implements RunRepository {
           run.error ?? null,
           run.conversationId ?? null,
           run.conversationSessionId ?? null,
+          run.taskId ?? null,
           run.createdAt,
           run.updatedAt,
         );
@@ -139,7 +143,7 @@ export class SqliteRunRepository implements RunRepository {
           const info = db
             .prepare(
               `UPDATE runs
-               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, conversation_id = ?, conversation_session_id = ?, updated_at = ?
+               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, conversation_id = ?, conversation_session_id = ?, task_id = ?, updated_at = ?
                WHERE id = ?`,
             )
             .run(
@@ -156,6 +160,7 @@ export class SqliteRunRepository implements RunRepository {
               run.error ?? null,
               run.conversationId ?? null,
               run.conversationSessionId ?? null,
+              run.taskId ?? null,
               run.updatedAt,
               run.id,
             );
