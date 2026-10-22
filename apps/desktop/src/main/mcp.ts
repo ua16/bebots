@@ -1,0 +1,150 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { z } from "zod";
+import { Effect } from "effect";
+import type { BotRepository, ConversationService } from "@bebots/application";
+import type { ConversationRunCoordinator } from "@bebots/application";
+import type { TaskService } from "@bebots/application";
+import { asBotId } from "@bebots/domain";
+
+export interface McpDeps {
+  readonly botRepo: BotRepository;
+  readonly conversationService: ConversationService;
+  readonly conversationCoordinator: ConversationRunCoordinator;
+  readonly taskService: TaskService;
+}
+
+export interface McpHandle {
+  readonly handleRequest: (req: Request) => Promise<Response>;
+}
+
+const WINDOW_MS = 60_000;
+const MAX_SENDS_PER_WINDOW = 20;
+const sendLog = new Map<string, number[]>();
+
+function allowSend(botId: string): boolean {
+  const now = Date.now();
+  const log = sendLog.get(botId) ?? [];
+  const recent = log.filter((t) => now - t < WINDOW_MS);
+  if (recent.length >= MAX_SENDS_PER_WINDOW) {
+    sendLog.set(botId, recent);
+    return false;
+  }
+  recent.push(now);
+  sendLog.set(botId, recent);
+  return true;
+}
+
+function buildServer(deps: McpDeps): McpServer {
+  const { botRepo, conversationService, conversationCoordinator, taskService } = deps;
+  const server = new McpServer({ name: "bebots", version: "1.0.0" });
+
+  server.registerTool(
+    "list_bots",
+    { description: "List all bots in this bebots instance (id, name, status).", inputSchema: {} },
+    async () => {
+      const bots = await Effect.runPromise(botRepo.findAll());
+      const payload = bots.map((b) => ({ id: String(b.id), name: b.name, status: b.status }));
+      return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+  );
+
+  server.registerTool(
+    "send_message",
+    {
+      description: "Send a message to another bot. Creates a new direct thread if no conversation_id is given.",
+      inputSchema: {
+        target_bot_id: z.string().describe("The id of the recipient bot"),
+        content: z.string().describe("Message content"),
+        conversation_id: z.string().optional().describe("Existing conversation id to post into"),
+      },
+    },
+    async (args, extra) => {
+      const callerId = extra.authInfo?.clientId;
+      if (!callerId) {
+        return { content: [{ type: "text", text: "Missing caller identity" }], isError: true };
+      }
+      if (!allowSend(callerId)) {
+        return { content: [{ type: "text", text: "Per-bot message rate limit exceeded" }], isError: true };
+      }
+      const target = await Effect.runPromise(botRepo.findById(asBotId(args.target_bot_id)));
+      if (!target || target.status !== "active") {
+        return { content: [{ type: "text", text: "Recipient bot not found or inactive" }], isError: true };
+      }
+
+      let conversationId = args.conversation_id;
+      if (!conversationId) {
+        const conv = await Effect.runPromise(
+          conversationService.createConversation({ kind: "direct", participants: [callerId, args.target_bot_id] }),
+        );
+        conversationId = String(conv.id);
+      }
+
+      const outcome = await Effect.runPromise(
+        conversationCoordinator.sendMessage({
+          conversationId,
+          content: args.content,
+          senderType: "bot",
+          senderId: callerId,
+        }),
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              conversationId,
+              messageId: String(outcome.message.id),
+              runId: outcome.run?.id ? String(outcome.run.id) : null,
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "create_task",
+    {
+      description: "Delegate a task to another bot and start a run for it.",
+      inputSchema: {
+        assignee: z.string().describe("Bot id of the assignee"),
+        description: z.string().describe("Task description / prompt"),
+      },
+    },
+    async (args, extra) => {
+      const callerId = extra.authInfo?.clientId;
+      if (!callerId) {
+        return { content: [{ type: "text", text: "Missing caller identity" }], isError: true };
+      }
+      const task = await Effect.runPromise(
+        taskService.delegate({ requester: callerId, assignee: args.assignee, description: args.description }),
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify({ taskId: String(task.id), status: task.status }) }],
+      };
+    },
+  );
+
+  return server;
+}
+
+export async function createMcpServer(deps: McpDeps): Promise<McpHandle> {
+  return {
+    handleRequest: async (req: Request) => {
+      const botId = req.headers.get("x-bebots-bot-id");
+      const authInfo = botId ? { token: "", clientId: botId, scopes: [] as string[] } : undefined;
+      const server = buildServer(deps);
+      const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+      await server.connect(transport);
+      const response = await transport.handleRequest(req, authInfo ? { authInfo } : undefined);
+      try {
+        await transport.close();
+      } catch {
+        /* ignore */
+      }
+      return response;
+    },
+  };
+}

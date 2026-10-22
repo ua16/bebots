@@ -29,6 +29,7 @@ import type { BotId, RunStatus, TaskStatus } from "@bebots/domain";
 import { asBotId, asRunId, asConversationId, asTaskId } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
+import { createMcpServer } from "./mcp";
 
 const isDev = !app.isPackaged;
 
@@ -46,6 +47,7 @@ let indexerInstance: { close(): void } | null = null;
 let sessionSweepInterval: ReturnType<typeof setInterval> | null = null;
 let apiEndpoint: { url: string; token: string } | null = null;
 let apiPort: number | null = null;
+let mcpHandle: { handleRequest: (req: Request) => Promise<Response> } | null = null;
 
 function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -184,11 +186,84 @@ async function setupBotService(): Promise<void> {
     ids: { generate: () => randomUUID() },
   });
   runService.setTaskResults(taskService);
+
+  // Remote MCP server (Approach B): in-process, exposed over HTTP at /mcp.
+  const mcp = await createMcpServer({
+    botRepo: repo,
+    conversationService,
+    conversationCoordinator,
+    taskService,
+  });
+  mcpHandle = mcp;
   const activityService = new ActivityService({
     activityRepo,
     clock: { now: () => Date.now() },
     ids: { generate: () => randomUUID() },
   });
+
+  // Helpers to register the remote MCP server in a bot's home directory and
+  // inject a protocol block into its AGENTS.md.
+  const fsMod = await import("node:fs");
+  const pathMod = await import("node:path");
+  const protocolBlock = (botId: string, bots: { id: string; name: string; status: string }[]) => {
+    const roster = bots
+      .filter((b) => b.id !== botId && b.status === "active")
+      .map((b) => `- ${b.id} (${b.name})`)
+      .join("\\n");
+    return [
+      "",
+      "",
+      "<!-- bebots-protocol -->",
+      `You are bot ${botId}. You can communicate with other bots using the bebots MCP tools:`,
+      "- list_bots: see all bots",
+      "- send_message(target_bot_id, content): send a message to another bot (creates a new thread)",
+      "- create_task(assignee, description): delegate work to another bot",
+      "Other bots:",
+      roster || "(none)",
+      "You may also include @botId in a reply to route a message.",
+      "<!-- /bebots-protocol -->",
+    ].join("\\n");
+  };
+  const writeBotMcpConfig = async (botId: string) => {
+    if (!apiEndpoint) return;
+    const home = workspace.homePath(asBotId(botId));
+    fsMod.mkdirSync(home, { recursive: true });
+    const cfg = {
+      mcp: {
+        servers: {
+          bebots: {
+            type: "remote",
+            url: `${apiEndpoint.url}/mcp`,
+            headers: {
+              Authorization: `Bearer ${apiEndpoint.token}`,
+              "X-Bebots-Bot-Id": botId,
+            },
+          },
+        },
+      },
+    };
+    fsMod.writeFileSync(pathMod.join(home, "opencode.json"), JSON.stringify(cfg, null, 2), "utf8");
+  };
+  const injectProtocol = async (botId: string) => {
+    const home = workspace.homePath(asBotId(botId));
+    const agentsPath = pathMod.join(home, "AGENTS.md");
+    let persona = "";
+    try {
+      persona = fsMod.readFileSync(agentsPath, "utf8");
+    } catch {
+      persona = "";
+    }
+    // Strip any previous protocol block.
+    persona = persona.replace(/\n\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/, "");
+    const bots = await Effect.runPromise(service.listBots(false));
+    const block = protocolBlock(botId, bots.map((b) => ({ id: String(b.id), name: b.name, status: b.status })));
+    fsMod.writeFileSync(agentsPath, persona + block, "utf8");
+  };
+  const ensureBotSetup = async (botId: string) => {
+    await writeBotMcpConfig(botId);
+    await injectProtocol(botId);
+  };
+
   closeDb = () => db.close();
 
   // PLAN §5: sessions expire after 30 days of inactivity — sweep at startup
@@ -222,10 +297,14 @@ async function setupBotService(): Promise<void> {
     return bot ? { ...bot, homePath: workspace.homePath(bot.id) } : null;
   });
   ipcMain.handle("bebots:bots:create", async (_event, input) => {
-    return Effect.runPromise(service.createBot(input));
+    const bot = await Effect.runPromise(service.createBot(input));
+    await ensureBotSetup(String(bot.id));
+    return bot;
   });
   ipcMain.handle("bebots:bots:update", async (_event, id: string, input) => {
-    return Effect.runPromise(service.updateBot(id as BotId, input));
+    const bot = await Effect.runPromise(service.updateBot(id as BotId, input));
+    await ensureBotSetup(String(bot.id));
+    return bot;
   });
   ipcMain.handle("bebots:bots:archive", async (_event, id: string) => {
     return Effect.runPromise(service.archiveBot(id as BotId));
@@ -360,6 +439,7 @@ async function setupBotService(): Promise<void> {
             ...(body.persona !== undefined && { persona: body.persona }),
           }),
         );
+        await ensureBotSetup(String(bot.id));
         sendJson(res, 201, bot);
         return;
       }
@@ -379,6 +459,7 @@ async function setupBotService(): Promise<void> {
             status?: "active" | "archived";
           };
           const bot = await Effect.runPromise(service.updateBot(id, body));
+          await ensureBotSetup(String(bot.id));
           sendJson(res, 200, bot);
           return;
         }
@@ -678,6 +759,24 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
+      // Remote MCP endpoint (Approach B): Streamable HTTP, JSON responses.
+      if (pathname === "/mcp") {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const buf = Buffer.concat(chunks);
+        const request = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
+          method: req.method ?? "POST",
+          headers: req.headers as Record<string, string>,
+          ...(buf.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: buf } : {}),
+        });
+        const response = await mcpHandle!.handleRequest(request);
+        res.statusCode = response.status;
+        response.headers.forEach((value, key) => res.setHeader(key, value));
+        const ab = await response.arrayBuffer();
+        res.end(Buffer.from(ab));
+        return;
+      }
+
       // Global pause/stop
       if (req.method === "GET" && pathname === "/api/v1/control/status") {
         sendJson(res, 200, { paused: runService.isPaused() });
@@ -731,6 +830,12 @@ async function setupBotService(): Promise<void> {
   apiPort = port;
   apiEndpoint = { url: `http://127.0.0.1:${port}`, token };
   fs.writeFileSync(join(userData, "api-port.txt"), String(port), "utf8");
+
+  // Configure existing bots now that apiEndpoint is known.
+  const existingBots = await Effect.runPromise(service.listBots(false));
+  for (const b of existingBots) {
+    await ensureBotSetup(String(b.id));
+  }
 }
 
 function createWindow(): void {
@@ -739,7 +844,7 @@ function createWindow(): void {
     height: 800,
     show: false,
     webPreferences: {
-      preload: join(__dirname, "../preload/index.js"),
+      preload: join(import.meta.dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -753,7 +858,7 @@ function createWindow(): void {
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    void mainWindow.loadFile(join(import.meta.dirname, "../renderer/index.html"));
   }
 }
 
