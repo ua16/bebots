@@ -192,6 +192,7 @@ async function setupBotService(): Promise<void> {
     botRepo: repo,
     conversationService,
     conversationCoordinator,
+    runService,
     taskService,
   });
   mcpHandle = mcp;
@@ -216,7 +217,7 @@ async function setupBotService(): Promise<void> {
       "<!-- bebots-protocol -->",
       `You are bot ${botId}. You can communicate with other bots using the bebots MCP tools:`,
       "- list_bots: see all bots",
-      "- send_message(target_bot_id, content): send a message to another bot (creates a new thread)",
+      "- send_message(target_bot_id, content): send a message to another bot; returns the bot's reply result (creates a new thread)",
       "- create_task(assignee, description): delegate work to another bot",
       "Other bots:",
       roster || "(none)",

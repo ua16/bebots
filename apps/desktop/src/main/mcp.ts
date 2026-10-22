@@ -2,15 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { Effect } from "effect";
-import type { BotRepository, ConversationService } from "@bebots/application";
+import type { BotRepository, ConversationService, RunService } from "@bebots/application";
 import type { ConversationRunCoordinator } from "@bebots/application";
 import type { TaskService } from "@bebots/application";
+import type { Run } from "@bebots/domain";
 import { asBotId } from "@bebots/domain";
 
 export interface McpDeps {
   readonly botRepo: BotRepository;
   readonly conversationService: ConversationService;
   readonly conversationCoordinator: ConversationRunCoordinator;
+  readonly runService?: RunService;
   readonly taskService: TaskService;
 }
 
@@ -36,7 +38,7 @@ function allowSend(botId: string): boolean {
 }
 
 function buildServer(deps: McpDeps): McpServer {
-  const { botRepo, conversationService, conversationCoordinator, taskService } = deps;
+  const { botRepo, conversationService, conversationCoordinator, runService, taskService } = deps;
   const server = new McpServer({ name: "bebots", version: "1.0.0" });
 
   server.registerTool(
@@ -52,7 +54,7 @@ function buildServer(deps: McpDeps): McpServer {
   server.registerTool(
     "send_message",
     {
-      description: "Send a message to another bot. Creates a new direct thread if no conversation_id is given.",
+      description: "Send a message to another bot and wait for its reply. Creates a new direct thread if no conversation_id is given.",
       inputSchema: {
         target_bot_id: z.string().describe("The id of the recipient bot"),
         content: z.string().describe("Message content"),
@@ -89,6 +91,17 @@ function buildServer(deps: McpDeps): McpServer {
         }),
       );
 
+      // Wait for the triggered runs to finish so the caller actually receives
+      // the recipient bot's results instead of just run ids.
+      const finalRuns: Run[] = [];
+      if (runService) {
+        for (const r of outcome.runs) {
+          const fr = await Effect.runPromise(runService.awaitRun(r.id));
+          if (fr) finalRuns.push(fr);
+        }
+      }
+      const finalRun = finalRuns[0] ?? null;
+
       return {
         content: [
           {
@@ -97,6 +110,17 @@ function buildServer(deps: McpDeps): McpServer {
               conversationId,
               messageId: String(outcome.message.id),
               runId: outcome.run?.id ? String(outcome.run.id) : null,
+              status: finalRun?.status ?? outcome.run?.status ?? null,
+              exitCode: finalRun?.exitCode ?? null,
+              summary: finalRun?.summary ?? null,
+              error: finalRun?.error ?? null,
+              runs: finalRuns.map((r) => ({
+                runId: String(r.id),
+                status: r.status,
+                exitCode: r.exitCode ?? null,
+                summary: r.summary ?? null,
+                error: r.error ?? null,
+              })),
             }),
           },
         ],

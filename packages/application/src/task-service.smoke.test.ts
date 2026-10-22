@@ -1,45 +1,68 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import { asBotId } from "@bebots/domain";
 import { TaskService } from "./task-service.js";
-import type { TaskRepository } from "./repositories.js";
-import type { BotRepository, BotWorkspace, Clock, IdGenerator, RunRepository } from "./repositories.js";
+import type { TaskRepository, BotRepository, RunRepository, BotWorkspace } from "./repositories.js";
 import { RunService } from "./run-service.js";
-import type { AgentRuntime, RunHandle, RunRequest, RunResult, RuntimeError, RuntimeEvent } from "./runtime.js";
+import type { AgentRuntime, RunHandle, RunRequest, RunResult, RuntimeEvent } from "./runtime.js";
 import { Stream } from "effect";
+import type { Bot, BotId, Run, Task } from "@bebots/domain";
 
 function makeTaskRepo(): TaskRepository {
-  const store = new Map<string, any>();
+  const store = new Map<string, Task>();
   return {
-    create: (t: any) => { store.set(t.id, t); return Effect.succeed(t); },
-    findById: (id: any) => Effect.succeed(store.get(String(id)) ?? null),
-    findAll: (opts: any) => Effect.succeed([...store.values()].filter((t:any) => (!opts?.assignee || t.assignee===opts.assignee) && (!opts?.status || t.status===opts.status))),
-    update: (t: any) => { store.set(t.id, t); return Effect.succeed(t); },
-    delete: (id: any) => { store.delete(String(id)); return Effect.void; },
-    findByIdempotencyKey: (key: any) => Effect.succeed([...store.values()].find((t:any)=>t.idempotencyKey===key) ?? null),
-  } as any;
+    create: (task) => { store.set(String(task.id), task); return Effect.succeed(task); },
+    findById: (id) => Effect.succeed(store.get(String(id)) ?? null),
+    findAll: (opts) =>
+      Effect.succeed(
+        [...store.values()].filter(
+          (task) =>
+            (!opts?.assignee || task.assignee === opts.assignee) &&
+            (!opts?.status || task.status === opts.status),
+        ),
+      ),
+    update: (task) => { store.set(String(task.id), task); return Effect.succeed(task); },
+    delete: (id) => { store.delete(String(id)); return Effect.void; },
+    findByIdempotencyKey: (key) =>
+      Effect.succeed([...store.values()].find((task) => task.idempotencyKey === key) ?? null),
+  };
 }
 
-function makeBotRepo() {
+function makeBotRepo(): BotRepository {
+  const fakeBot = (id: BotId): Bot => ({
+    id,
+    name: "Bot",
+    description: "",
+    persona: "",
+    status: "active",
+    createdAt: 1,
+    updatedAt: 1,
+  });
   return {
-    create: (b:any)=>Effect.succeed(b),
-    findById: (id:any)=>Effect.succeed({ id, name:"Bot", description:"", persona:"", status:"active", createdAt:1, updatedAt:1 } as any),
-    findAll: ()=>Effect.succeed([]),
-    update: (b:any)=>Effect.succeed(b),
-    delete: ()=>Effect.void,
-  } as any;
+    create: (bot) => Effect.succeed(bot),
+    findById: (id) => Effect.succeed(fakeBot(id)),
+    findAll: () => Effect.succeed([]),
+    update: (bot) => Effect.succeed(bot),
+    delete: () => Effect.void,
+  };
 }
 
-function makeRunRepo() {
-  const store = new Map<string, any>();
+function makeRunRepo(): RunRepository {
+  const store = new Map<string, Run>();
   return {
-    create: (r:any)=>{store.set(r.id,r);return Effect.succeed(r);},
-    findById: (id:any)=>Effect.succeed(store.get(String(id)) ?? null),
-    findAll: (opts:any)=>Effect.succeed([...store.values()].filter((r:any)=>(!opts?.botId||r.botId===opts.botId)&&(!opts?.status||r.status===opts.status))),
-    update: (r:any)=>{store.set(r.id,r);return Effect.succeed(r);},
-    appendEvent: ()=>Effect.void,
-    listEvents: ()=>Effect.succeed([]),
-  } as any;
+    create: (run) => { store.set(String(run.id), run); return Effect.succeed(run); },
+    findById: (id) => Effect.succeed(store.get(String(id)) ?? null),
+    findAll: (opts) =>
+      Effect.succeed(
+        [...store.values()].filter(
+          (run) =>
+            (!opts?.botId || run.botId === opts.botId) &&
+            (!opts?.status || run.status === opts.status),
+        ),
+      ),
+    update: (run) => { store.set(String(run.id), run); return Effect.succeed(run); },
+    appendEvent: () => Effect.void,
+    listEvents: () => Effect.succeed([]),
+  };
 }
 
 describe("TaskService smoke", () => {

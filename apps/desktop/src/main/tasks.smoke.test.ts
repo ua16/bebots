@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Effect } from "effect";
 
 vi.mock("@bebots/runtime-opencode", async () => {
   const { Effect, Stream } = await import("effect");
@@ -31,7 +30,8 @@ describe("tasks HTTP API", () => {
     process.env.ELECTRON_RENDERER_URL = "http://localhost:5173";
     const ipcMain = { handle: vi.fn() };
     const BrowserWindow = vi.fn().mockImplementation(() => ({ on: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(), show: vi.fn() }));
-    (BrowserWindow as any).getAllWindows = vi.fn(() => []);
+    const winCtor = BrowserWindow as unknown as { getAllWindows?: () => unknown[] };
+    winCtor.getAllWindows = vi.fn(() => []);
     vi.doMock("electron", () => ({
       app: { isPackaged: false, getPath: () => dir, whenReady: () => Promise.resolve(), on: vi.fn(), quit: vi.fn(), commandLine: { appendSwitch: vi.fn() } },
       BrowserWindow,
