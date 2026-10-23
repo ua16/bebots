@@ -164,24 +164,36 @@ export class ConversationRunCoordinator {
       // Resolve recipient bots.
       const recipients = new Map<string, { id: string; name: string }>();
 
-      // Explicit mentions (@botId or @botName) work for any sender.
-      const mentionTokens = [...(message.content.match(/@([A-Za-z0-9_-]+)/g) ?? [])].map((t) =>
-        t.slice(1),
-      );
-      for (const token of mentionTokens) {
-        // Try by id first.
-        let bot = yield* botRepo.findById(asBotId(token)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
-        if (!bot) {
-          // Try by name.
-          const all = yield* botRepo.findAll();
-          bot = all.find((b) => b.name === token && b.status === "active") ?? null;
-        }
-        if (bot && bot.status === "active" && String(bot.id) !== senderId) {
-          recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
+      // Explicit mentions (@botId or @botName) resolve recipients for bot
+      // senders only (bot-to-bot relay, PLAN §12 M4): a bot may address a
+      // specific peer inside a thread. A human message always stays with the
+      // participant bot the user is talking to — that bot contacts the
+      // @-mentioned peer itself via send_message. Redirecting a human
+      // mention to the peer started a second run and delivered the reply
+      // twice (see "duplicate reply runs" tests).
+      if (senderType !== "human") {
+        const mentionTokens = [...(message.content.match(/@([A-Za-z0-9_-]+)/g) ?? [])].map((t) =>
+          t.slice(1),
+        );
+        for (const token of mentionTokens) {
+          // Try by id first.
+          let bot = yield* botRepo
+            .findById(asBotId(token))
+            .pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+          if (!bot) {
+            // Try by name.
+            const all = yield* botRepo.findAll();
+            bot = all.find((b) => b.name === token && b.status === "active") ?? null;
+          }
+          if (bot && bot.status === "active" && String(bot.id) !== senderId) {
+            recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
+          }
         }
       }
 
-      // Human messages trigger the first active bot participant (M3 behavior).
+      // Human messages trigger the first active bot participant (M3
+      // behavior) — mentions never redirect a human message away from the
+      // participant bot they are talking to.
       if (senderType === "human" && canPropagate) {
         for (const participant of conversation.participants) {
           const raw = participant.trim();

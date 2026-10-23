@@ -52,6 +52,8 @@ export interface ListMessagesOptions {
 export interface CreateSessionInput {
   readonly conversationId: string;
   readonly runtimeSessionId: string;
+  /** The bot whose runtime session this record mirrors (per-bot scoping). */
+  readonly botId?: string | null;
   readonly status?: ConversationSessionStatus;
 }
 
@@ -214,6 +216,7 @@ export interface ConversationSessionOps {
   readonly getSession: (id: string) => Effect.Effect<ConversationSession | null, RepositoryError>;
   readonly findResumableSession: (
     conversationId: string,
+    botId?: string | null,
   ) => Effect.Effect<ConversationSession | null, RepositoryError>;
   readonly touchSession: (
     id: string,
@@ -257,6 +260,7 @@ export class ConversationSessionService implements ConversationSessionOps {
         id: asConversationSessionId(ids.generate()),
         conversationId: asConversationId(input.conversationId),
         runtimeSessionId,
+        botId: input.botId ?? null,
         lastUsedAt: now,
         status: input.status ?? "active",
         createdAt: now,
@@ -287,12 +291,17 @@ export class ConversationSessionService implements ConversationSessionOps {
     });
   }
 
-  /** Most recent still-active session for the conversation; expired/closed ones are not resumable. */
+  /** Most recent still-active session for the conversation that belongs to
+   * the given bot (per-bot scoping); expired/closed ones are not resumable.
+   * Without a botId, legacy behavior: latest active session regardless of bot.
+   */
   findResumableSession(
     conversationId: string,
+    botId?: string | null,
   ): Effect.Effect<ConversationSession | null, RepositoryError> {
     return this.sessionRepo.findLatestByConversation(asConversationId(conversationId), {
       status: "active",
+      ...(botId !== undefined && { botId }),
     });
   }
 

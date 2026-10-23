@@ -9,12 +9,72 @@ export function asBotId(value: string): BotId {
 
 export type BotStatus = "active" | "archived";
 
+/**
+ * Reference to an OpenCode model, mirroring the shape of the
+ * `POST /api/session/{id}/model` switch body (`Model.Ref`). `id` is the
+ * model's id within the provider (e.g. `gpt-5.1`), not a full composite.
+ */
+export interface ModelRef {
+  readonly providerID: string;
+  readonly id: string;
+}
+
+/** Serialize a ModelRef for a persisted TEXT column. `null` becomes `''`. */
+export function serializeModelRef(ref: ModelRef | null | undefined): string {
+  if (!ref) return "";
+  return JSON.stringify({ providerID: ref.providerID, id: ref.id });
+}
+
+/** Parse a persisted TEXT column back into a ModelRef. Anything invalid becomes `null`. */
+export function parseModelRef(value: string | null | undefined): ModelRef | null {
+  if (!value) return null;
+  try {
+    const parsed = validateModelRef(JSON.parse(value) as unknown);
+    return parsed.valid ? parsed.value ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Result of validating untrusted model-ref input: the normalized (trimmed)
+ * value, or which field failed and why.
+ */
+export type ValidatedModelRef =
+  | { readonly valid: true; readonly value: ModelRef | null | undefined }
+  | { readonly valid: false; readonly field: string; readonly message: string };
+
+/**
+ * Validate untrusted model-ref input (an HTTP request body field or a decoded
+ * persisted value). `undefined` means "field not sent" and `null` means
+ * "explicitly clear", so partial-update callers can distinguish keep from
+ * clear; a present value must be `{ providerID, id }` with non-empty strings.
+ */
+export function validateModelRef(model: unknown): ValidatedModelRef {
+  if (model === undefined || model === null) {
+    return { valid: true, value: model };
+  }
+  if (typeof model !== "object") {
+    return { valid: false, field: "model", message: "Model must be an object" };
+  }
+  const ref = model as { providerID?: unknown; id?: unknown };
+  if (typeof ref.providerID !== "string" || ref.providerID.trim().length === 0) {
+    return { valid: false, field: "model.providerID", message: "Provider id cannot be empty" };
+  }
+  if (typeof ref.id !== "string" || ref.id.trim().length === 0) {
+    return { valid: false, field: "model.id", message: "Model id cannot be empty" };
+  }
+  return { valid: true, value: { providerID: ref.providerID.trim(), id: ref.id.trim() } };
+}
+
 export interface Bot {
   readonly id: BotId;
   readonly name: string;
   readonly description: string;
   readonly persona: string;
   readonly status: BotStatus;
+  /** Per-bot model override; `null`/absent means "use the app default, if any". */
+  readonly model?: ModelRef | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -124,6 +184,12 @@ export interface ConversationSession {
   readonly conversationId: ConversationId;
   /** Runtime session id this record mirrors; never the source of truth for bot identity. */
   readonly runtimeSessionId: string;
+  /**
+   * The bot whose OpenCode session this is; `null`/absent for legacy rows
+   * recorded before per-bot scoping. A run must only resume a session that
+   * belongs to its own bot — sessions are scoped per (conversation, bot).
+   */
+  readonly botId?: string | null;
   readonly lastUsedAt: number;
   readonly status: ConversationSessionStatus;
   readonly createdAt: number;

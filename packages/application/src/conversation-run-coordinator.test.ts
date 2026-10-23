@@ -275,3 +275,59 @@ describe("BotReplyRecorder", () => {
     expect(thread[0]?.content).toBe("the answer");
   });
 });
+
+describe("duplicate reply runs", () => {
+  const secondBot: Bot = { ...bot, id: asBotId("bot-2"), name: "Bot Two" };
+  const twoBotRepo: BotRepository = {
+    create: (b) => Effect.succeed(b),
+    findById: (id) => {
+      const key = String(id);
+      return Effect.succeed(key === "bot-1" ? bot : key === "bot-2" ? secondBot : null);
+    },
+    findAll: () => Effect.succeed([bot, secondBot]),
+    update: (b) => Effect.succeed(b),
+    delete: () => Effect.void,
+  };
+
+  it("a human message that explicitly mentions another bot still triggers the participant bot", async () => {
+    const started: RunRequest[] = [];
+    const runtime = makeRuntime({
+      startRun: (request: RunRequest) => {
+        started.push(request);
+        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+      },
+    });
+    const fixedClock: Clock = { now: () => 1_000 };
+    const ids: IdGenerator = { generate: () => "fixed-id" };
+    const conversationService = new ConversationService({
+      conversationRepo: makeConversationRepo(),
+      messageRepo: makeMessageRepo(),
+      clock: fixedClock,
+      ids,
+    });
+    const runService = new RunService(makeRunRepo(), twoBotRepo, workspace, runtime, fixedClock, ids);
+    const coordinator = new ConversationRunCoordinator({ conversationService, runService, botRepo: twoBotRepo });
+
+    const created = await Effect.runPromise(
+      conversationService.createConversation({ title: "thread", participants: ["bot-1", "human"] }),
+    );
+    const conversationId = String(created.id);
+
+    // The user's real scenario: a message written in one bot's thread that
+    // @-mentions another bot stays with the thread's participant bot — the
+    // participant then contacts the mentioned bot itself via send_message.
+    // Starting a second run for the mentioned bot delivered the reply twice.
+    await Effect.runPromise(
+      coordinator.sendMessage({
+        conversationId,
+        content: "Ask @bot-2 what the company name is",
+        senderType: "human",
+      }),
+    );
+    // Give the instant-completing fake runtime a beat to settle any follow-up
+    // triggering from recorded replies.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(started.map((r) => String(r.botId))).toEqual(["bot-1"]);
+  });
+});

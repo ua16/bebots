@@ -194,6 +194,28 @@ const MIGRATIONS: readonly Migration[] = [
     name: "add_run_task_id",
     sql: `ALTER TABLE runs ADD COLUMN task_id TEXT;`,
   },
+  {
+    version: 14,
+    name: "bot_model_and_app_settings",
+    sql: `
+      ALTER TABLE bots ADD COLUMN model TEXT NOT NULL DEFAULT '';
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 15,
+    name: "sessions_per_bot",
+    sql: `
+      -- Resumable sessions are scoped per (conversation, bot): one bot's run
+      -- must never resume another bot's OpenCode session in the same thread.
+      ALTER TABLE conversation_sessions ADD COLUMN bot_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_conversation_sessions_conversation_bot
+        ON conversation_sessions (conversation_id, bot_id);
+    `,
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {

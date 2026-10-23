@@ -84,4 +84,28 @@ describe("SqliteBotRepository", () => {
     expect(all).toHaveLength(1);
     db.close();
   });
+
+  it("persists, updates and clears a per-bot model", async () => {
+    const db = await openDatabase(dbPath);
+    migrate(db);
+    const repo = createSqliteBotRepository(db);
+    const bot = {
+      id: asBotId("bot-4"),
+      name: "Bot Four",
+      description: "",
+      persona: "",
+      status: "active" as const,
+      model: { providerID: "anthropic", id: "claude-sonnet-4-5" },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await Effect.runPromise(repo.create(bot));
+    let found = await Effect.runPromise(repo.findById(asBotId("bot-4")));
+    expect(found?.model).toEqual({ providerID: "anthropic", id: "claude-sonnet-4-5" });
+
+    await Effect.runPromise(repo.update({ ...bot, model: null, updatedAt: 2 }));
+    found = await Effect.runPromise(repo.findById(asBotId("bot-4")));
+    expect(found?.model).toBeNull();
+    db.close();
+  });
 });

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
-import type { Bot, BotId, BotStatus } from "@bebots/domain";
-import { asBotId } from "@bebots/domain";
+import type { Bot, BotId, BotStatus, ModelRef } from "@bebots/domain";
+import { asBotId, validateModelRef } from "@bebots/domain";
 import type { BotRepository, BotWorkspace, Clock, IdGenerator } from "./repositories.js";
 import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
 
@@ -8,6 +8,8 @@ export interface CreateBotInput {
   readonly name: string;
   readonly description?: string;
   readonly persona?: string;
+  /** Per-bot model override. */
+  readonly model?: ModelRef | null;
 }
 
 export interface UpdateBotInput {
@@ -15,6 +17,8 @@ export interface UpdateBotInput {
   readonly description?: string;
   readonly persona?: string;
   readonly status?: BotStatus;
+  /** Per-bot model override; `null` clears it (fall back to app default). */
+  readonly model?: ModelRef | null;
 }
 
 function validateName(name: string): void {
@@ -47,6 +51,13 @@ export class BotService {
       }
       const description = (input.description ?? "").trim();
       const persona = input.persona ?? "";
+      const modelValidated = validateModelRef(input.model);
+      if (!modelValidated.valid) {
+        return yield* Effect.fail(
+          new ValidationError(modelValidated.field, modelValidated.message),
+        );
+      }
+      const model = modelValidated.value ?? null;
       let id: BotId;
       try {
         id = asBotId(ids.generate());
@@ -62,6 +73,7 @@ export class BotService {
         description,
         persona,
         status: "active",
+        model,
         createdAt: now,
         updatedAt: now,
       };
@@ -97,6 +109,12 @@ export class BotService {
           return yield* Effect.fail(e as ValidationError);
         }
       }
+      const modelValidated = validateModelRef(input.model);
+      if (!modelValidated.valid) {
+        return yield* Effect.fail(
+          new ValidationError(modelValidated.field, modelValidated.message),
+        );
+      }
       const updated: Bot = {
         ...existing,
         name: input.name !== undefined ? input.name.trim() : existing.name,
@@ -104,6 +122,9 @@ export class BotService {
           input.description !== undefined ? input.description.trim() : existing.description,
         persona: input.persona !== undefined ? input.persona : existing.persona,
         status: input.status !== undefined ? input.status : existing.status,
+        // Only touch the model when the caller sent the field at all
+        // (undefined = keep, null = clear, ref = set); see `validateModelRef`.
+        ...(input.model !== undefined && { model: modelValidated.value ?? null }),
         updatedAt: clock.now(),
       };
       yield* repo.update(updated);

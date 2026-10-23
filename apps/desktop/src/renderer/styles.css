@@ -377,11 +377,38 @@
 }
 
 .bot-editor input,
-.bot-editor textarea {
+.bot-editor textarea,
+.settings-panel select,
+.bot-editor select {
   padding: 0.5rem;
   border: 1px solid #ccc;
   border-radius: 4px;
   font: inherit;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 420px;
+  margin: 0.75rem auto 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fbfbfc;
+}
+
+.settings-panel h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.settings-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 500;
+  font-size: 0.85rem;
 }
 
 .bot-editor textarea {

@@ -10,6 +10,7 @@ import type {
   RuntimeError,
   RuntimeCapabilities,
   RuntimeEvent,
+  RuntimeModelInfo,
 } from "@bebots/application";
 
 interface ServerInfo {
@@ -213,6 +214,31 @@ export class OpenCodeRuntime implements AgentRuntime {
         };
         this.runs.set(runId, state);
         this.notify(state);
+
+        // Apply the requested model (bot override or app default) on the
+        // freshly created-or-resolved session, BEFORE the prior-message
+        // snapshot below: the model switch records a message on the session,
+        // and that snapshot must treat it as belonging to this run and not
+        // the previous ones (issue #21 filtering). A failed switch (e.g. the
+        // model id is no longer known) is surfaced as a progress event —
+        // the run then proceeds on OpenCode's own default model rather
+        // than failing outright.
+        const requestedModel = request.model;
+        if (requestedModel) {
+          try {
+            await self.request(
+              server,
+              "POST",
+              `/api/session/${sessionId}/model`,
+              { model: { id: requestedModel.id, providerID: requestedModel.providerID } },
+            );
+          } catch (e) {
+            state.events.push({
+              _tag: "progress",
+              message: `Model ${requestedModel.providerID}/${requestedModel.id} could not be selected (${e instanceof Error ? e.message : String(e)}) — using the default model.`,
+            });
+          }
+        }
 
         // Snapshot the messages already in the session BEFORE prompting. On a
         // resumed session this run must only report its own messages — the
@@ -447,6 +473,37 @@ export class OpenCodeRuntime implements AgentRuntime {
         (cause as RuntimeError)?._tag === "RuntimeError"
           ? (cause as RuntimeError)
           : makeError("Failed to get result", cause),
+    });
+  }
+  listModels(): Effect.Effect<readonly RuntimeModelInfo[], RuntimeError> {
+    const self = this;
+    return Effect.tryPromise({
+      try: async () => {
+        const server = await self.ensureServer();
+        const res = await self.request<{ data?: Array<Record<string, unknown>> }>(
+          server,
+          "GET",
+          "/api/model",
+        );
+        const data = Array.isArray(res) ? res : (res?.data ?? []);
+        return data
+          .filter((m) => typeof m?.providerID === "string" && typeof m?.id === "string")
+          .map((m) => {
+            const base: RuntimeModelInfo = {
+              providerID: m.providerID as string,
+              id: m.id as string,
+              name: typeof m.name === "string" && m.name.length > 0 ? m.name : (m.id as string),
+              enabled: m.enabled !== false,
+            };
+            return typeof m.status === "string"
+              ? {
+                  ...base,
+                  status: m.status as "alpha" | "beta" | "deprecated" | "active",
+                }
+              : base;
+          });
+      },
+      catch: (cause: unknown) => makeError("Failed to list models", cause),
     });
   }
   close(): void {

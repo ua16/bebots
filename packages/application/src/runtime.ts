@@ -1,5 +1,5 @@
 import { Effect, Stream } from "effect";
-import type { BotId } from "@bebots/domain";
+import type { BotId, ModelRef } from "@bebots/domain";
 
 /**
  * Capability flags a runtime may or may not support. Differences between
@@ -23,6 +23,8 @@ export interface RunRequest {
   readonly prompt: string;
   readonly sessionId?: string;
   readonly timeoutMs: number;
+  /** Model override (bot's model or the app default) the run should use. */
+  readonly model?: ModelRef;
 }
 
 export interface RunHandle {
@@ -43,6 +45,15 @@ export interface RunResult {
   readonly sessionId?: string;
 }
 
+/** Slimmed-down model info for pickers; mirrors OpenCode's `GET /api/model`. */
+export interface RuntimeModelInfo {
+  readonly providerID: string;
+  readonly id: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  readonly status?: "alpha" | "beta" | "deprecated" | "active";
+}
+
 /**
  * Stable internal runtime adapter contract. All adapters must implement
  * this interface; lifecycle tests are shared across adapters.
@@ -58,4 +69,10 @@ export interface AgentRuntime {
   streamEvents(handle: RunHandle): Stream.Stream<RuntimeEvent, RuntimeError>;
 
   getResult(handle: RunHandle): Effect.Effect<RunResult, RuntimeError>;
+
+  /**
+   * Models the runtime can run (for pickers and validation). Optional —
+   * runtimes without a model catalog may omit it.
+   */
+  listModels?(): Effect.Effect<readonly RuntimeModelInfo[], RuntimeError>;
 }

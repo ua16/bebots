@@ -13,6 +13,7 @@ interface SessionRow {
   last_used_at: number;
   created_at: number;
   updated_at: number;
+  bot_id: string | null;
 }
 
 function rowToSession(row: SessionRow): ConversationSession {
@@ -20,6 +21,7 @@ function rowToSession(row: SessionRow): ConversationSession {
     id: asConversationSessionId(row.id),
     conversationId: asConversationId(row.conversation_id),
     runtimeSessionId: row.runtime_session_id,
+    botId: row.bot_id ?? null,
     lastUsedAt: row.last_used_at,
     status: row.status as ConversationSession["status"],
     createdAt: row.created_at,
@@ -38,12 +40,13 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO conversation_sessions (id, conversation_id, runtime_session_id, status, last_used_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO conversation_sessions (id, conversation_id, runtime_session_id, bot_id, status, last_used_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           session.id,
           session.conversationId,
           session.runtimeSessionId,
+          session.botId ?? null,
           session.status,
           session.lastUsedAt,
           session.createdAt,
@@ -87,7 +90,11 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
 
   findLatestByConversation(
     conversationId: ConversationId,
-    options?: { readonly status?: ConversationSession["status"] },
+    options?: {
+      readonly status?: ConversationSession["status"];
+      /** Restrict to sessions of this bot; legacy rows store SQL NULL. */
+      readonly botId?: string | null;
+    },
   ): Effect.Effect<ConversationSession | null, RepositoryError> {
     const db = this.db;
     return Effect.try({
@@ -97,6 +104,15 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
         if (options?.status) {
           clauses.push("status = ?");
           params.push(options.status);
+        }
+        if (options?.botId !== undefined) {
+          if (options.botId === null) {
+            // Unattributed (legacy) rows: SQL NULL needs IS NULL, not = NULL.
+            clauses.push("bot_id IS NULL");
+          } else {
+            clauses.push("bot_id = ?");
+            params.push(options.botId);
+          }
         }
         const row = db
           .prepare(
@@ -145,11 +161,12 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
         try: () =>
           db
             .prepare(
-              `UPDATE conversation_sessions SET conversation_id = ?, runtime_session_id = ?, status = ?, last_used_at = ?, updated_at = ? WHERE id = ?`,
+              `UPDATE conversation_sessions SET conversation_id = ?, runtime_session_id = ?, bot_id = ?, status = ?, last_used_at = ?, updated_at = ? WHERE id = ?`,
             )
             .run(
               session.conversationId,
               session.runtimeSessionId,
+              session.botId ?? null,
               session.status,
               session.lastUsedAt,
               session.updatedAt,

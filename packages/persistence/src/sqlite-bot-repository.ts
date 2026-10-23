@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import type { Bot, BotId } from "@bebots/domain";
-import { asBotId } from "@bebots/domain";
+import { asBotId, parseModelRef, serializeModelRef } from "@bebots/domain";
 import type { BotRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
 import type { SqliteDatabase } from "./database.js";
@@ -11,6 +11,8 @@ interface BotRow {
   description: string;
   persona: string;
   status: string;
+  /** JSON-encoded ModelRef, or '' when unset. */
+  model: string;
   created_at: number;
   updated_at: number;
 }
@@ -22,6 +24,7 @@ function rowToBot(row: BotRow): Bot {
     description: row.description,
     persona: row.persona,
     status: row.status as Bot["status"],
+    model: parseModelRef(row.model),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -39,14 +42,15 @@ export class SqliteBotRepository implements BotRepository {
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO bots (id, name, description, persona, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO bots (id, name, description, persona, status, model, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           bot.id,
           bot.name,
           bot.description,
           bot.persona,
           bot.status,
+          serializeModelRef(bot.model),
           bot.createdAt,
           bot.updatedAt,
         );
@@ -91,10 +95,18 @@ export class SqliteBotRepository implements BotRepository {
           const info = db
             .prepare(
               `UPDATE bots
-               SET name = ?, description = ?, persona = ?, status = ?, updated_at = ?
+               SET name = ?, description = ?, persona = ?, status = ?, model = ?, updated_at = ?
                WHERE id = ?`,
             )
-            .run(bot.name, bot.description, bot.persona, bot.status, bot.updatedAt, bot.id);
+            .run(
+              bot.name,
+              bot.description,
+              bot.persona,
+              bot.status,
+              serializeModelRef(bot.model),
+              bot.updatedAt,
+              bot.id,
+            );
           return info.changes;
         },
         catch: (cause: unknown) => new RepositoryError("Failed to update bot", cause),

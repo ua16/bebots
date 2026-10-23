@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
+import { parseModelRef } from "@bebots/domain";
 import "./styles.css";
 
 declare global {
@@ -41,6 +42,62 @@ interface ApiRun {
   readonly createdAt: number;
 }
 
+interface ApiModelRef {
+  readonly providerID: string;
+  readonly id: string;
+}
+
+interface ApiModel {
+  readonly providerID: string;
+  readonly id: string;
+  readonly name: string;
+  readonly enabled: boolean;
+}
+
+/**
+ * A model-picker selection: which model (if any) to run with, expressed as a
+ * union so the two "use no specific model" meanings — follow the app default
+ * (bot editor) and use OpenCode's own default (app settings) — stay distinct.
+ */
+type ModelSelection =
+  | { readonly kind: "app-default" }
+  | { readonly kind: "runtime-default" }
+  | { readonly kind: "ref"; readonly ref: ApiModelRef };
+
+const APP_DEFAULT_KEY = "default";
+const RUNTIME_DEFAULT_KEY = "none";
+
+/** A <select> value must be a string, so refs travel JSON-encoded. */
+function selectionToSelectValue(selection: ModelSelection): string {
+  if (selection.kind === "app-default") return APP_DEFAULT_KEY;
+  if (selection.kind === "runtime-default") return RUNTIME_DEFAULT_KEY;
+  return JSON.stringify(selection.ref);
+}
+
+/** Inverse of `selectionToSelectValue`; `null` signals an unparseable key. */
+function selectValueToSelection(value: string): ModelSelection | null {
+  if (value === APP_DEFAULT_KEY) return { kind: "app-default" };
+  if (value === RUNTIME_DEFAULT_KEY) return { kind: "runtime-default" };
+  // Shared domain parser — the UI does not re-implement model-ref validation.
+  const ref = parseModelRef(value);
+  return ref ? { kind: "ref", ref } : null;
+}
+
+/** A saved model on a bot: `null` means "follow the app default". */
+function botModelToSelection(ref: ApiModelRef | null | undefined): ModelSelection {
+  return ref ? { kind: "ref", ref } : { kind: "app-default" };
+}
+
+/** The user's saved app default; `null` means "OpenCode default". */
+function appDefaultToSelection(ref: ApiModelRef | null | undefined): ModelSelection {
+  return ref ? { kind: "ref", ref } : { kind: "runtime-default" };
+}
+
+/** The model override (or explicit `null`) implied by a selection. */
+function selectionToApiModel(selection: ModelSelection): ApiModelRef | null {
+  return selection.kind === "ref" ? selection.ref : null;
+}
+
 async function apiFetch<T>(
   endpoint: ApiEndpoint,
   path: string,
@@ -73,6 +130,16 @@ export function App() {
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<string | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+
+  // Model pickers: catalog from the runtime, per-bot override, global default.
+  const [models, setModels] = useState<readonly ApiModel[]>([]);
+  const [botModelSelection, setBotModelSelection] = useState<ModelSelection>({
+    kind: "app-default",
+  });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [defaultModelSelection, setDefaultModelSelection] = useState<ModelSelection>({
+    kind: "runtime-default",
+  });
 
   // Conversations
   const [conversations, setConversations] = useState<readonly ApiConversation[]>([]);
@@ -133,6 +200,16 @@ export function App() {
     void refreshBots();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!endpoint) return;
+    void apiFetch<readonly ApiModel[]>(endpoint, "/api/v1/models")
+      .then((list) => setModels(list.filter((m) => m.enabled)))
+      .catch(() => {});
+    void apiFetch<{ defaultModel?: ApiModelRef | null }>(endpoint, "/api/v1/settings")
+      .then((s) => setDefaultModelSelection(appDefaultToSelection(s.defaultModel)))
+      .catch(() => {});
+  }, [endpoint]);
 
   useEffect(() => {
     void refreshConversations();
@@ -282,18 +359,50 @@ export function App() {
       setName(selected.name);
       setDescription(selected.description);
       setPersona(selected.persona);
+      setBotModelSelection(botModelToSelection(selected.model));
     } else {
       setName("");
       setDescription("");
       setPersona("");
+      setBotModelSelection({ kind: "app-default" });
     }
   }, [selected]);
+
+  // Group the model catalog by provider (stable, response order) for optgroups.
+  const modelGroups: ReadonlyArray<[string, readonly ApiModel[]]> = (() => {
+    const groups = new Map<string, ApiModel[]>();
+    for (const m of models) {
+      const list = groups.get(m.providerID) ?? [];
+      list.push(m);
+      groups.set(m.providerID, list);
+    }
+    return [...groups.entries()];
+  })();
+
+  const saveAppSettings = async () => {
+    if (!endpoint) return;
+    setError(null);
+    try {
+      const s = await apiFetch<{ defaultModel?: ApiModelRef | null }>(endpoint, "/api/v1/settings", {
+        method: "PUT",
+        body: { defaultModel: selectionToApiModel(defaultModelSelection) },
+      });
+      setDefaultModelSelection(appDefaultToSelection(s.defaultModel));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const handleCreate = async () => {
     if (!api) return;
     setError(null);
     try {
-      const bot = await api.create({ name: name || "New bot", description, persona });
+      const bot = await api.create({
+        name: name || "New bot",
+        description,
+        persona,
+        model: selectionToApiModel(botModelSelection),
+      });
       setSelectedId(bot.id);
       await refreshBots();
     } catch (e) {
@@ -305,7 +414,12 @@ export function App() {
     if (!api || !selectedId) return;
     setError(null);
     try {
-      await api.update(selectedId, { name, description, persona });
+      await api.update(selectedId, {
+        name,
+        description,
+        persona,
+        model: selectionToApiModel(botModelSelection),
+      });
       await refreshBots();
     } catch (e) {
       setError(String(e));
@@ -417,12 +531,51 @@ export function App() {
         <button
           type="button"
           className="header-toggle"
+          onClick={() => setSettingsOpen((open) => !open)}
+        >
+          {settingsOpen ? "Close settings" : "Settings"}
+        </button>
+        <button
+          type="button"
+          className="header-toggle"
           onClick={() => setBotsPanelOpen((open) => !open)}
         >
           {botsPanelOpen ? "Hide bots" : "Show bots"}
         </button>
       </header>
       {error && <p className="error app-error">{error}</p>}
+
+      {settingsOpen && (
+        <section className="settings-panel">
+          <h2>Settings</h2>
+          <label>
+            Default model (bots without an override)
+            <select
+              value={selectionToSelectValue(defaultModelSelection)}
+              onChange={(e) => {
+                const selection = selectValueToSelection(e.target.value);
+                if (selection) setDefaultModelSelection(selection);
+              }}
+            >
+              <option value={RUNTIME_DEFAULT_KEY}>OpenCode default</option>
+              {modelGroups.map(([provider, items]) => (
+                <optgroup key={provider} label={provider}>
+                  {items.map((m) => (
+                    <option key={m.id} value={selectionToSelectValue({ kind: "ref", ref: m })}>
+                      {m.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <div className="actions">
+            <button type="button" onClick={() => void saveAppSettings()}>
+              Save settings
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="chat-layout">
         <aside className="chat-sidebar">
@@ -620,6 +773,31 @@ export function App() {
               <label>
                 Persona
                 <textarea value={persona} onChange={(e) => setPersona(e.target.value)} />
+              </label>
+              <label>
+                Model
+                <select
+                  value={selectionToSelectValue(botModelSelection)}
+                  onChange={(e) => {
+                    const selection = selectValueToSelection(e.target.value);
+                    if (selection) setBotModelSelection(selection);
+                  }}
+                >
+                  <option value={APP_DEFAULT_KEY}>
+                    {defaultModelSelection.kind === "runtime-default"
+                      ? "OpenCode default"
+                      : "Use app default"}
+                  </option>
+                  {modelGroups.map(([provider, items]) => (
+                    <optgroup key={provider} label={provider}>
+                      {items.map((m) => (
+                        <option key={m.id} value={selectionToSelectValue({ kind: "ref", ref: m })}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
               </label>
               <div className="actions">
                 {selected ? (

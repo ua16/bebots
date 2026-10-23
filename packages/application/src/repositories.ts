@@ -84,7 +84,11 @@ export interface ConversationSessionRepository {
   ) => Effect.Effect<readonly ConversationSession[], RepositoryError>;
   readonly findLatestByConversation: (
     conversationId: ConversationId,
-    options?: { readonly status?: ConversationSession["status"] },
+    options?: {
+      readonly status?: ConversationSession["status"];
+      /** Restrict to sessions belonging to this bot; `null` matches unattributed (legacy) rows only. */
+      readonly botId?: string | null;
+    },
   ) => Effect.Effect<ConversationSession | null, RepositoryError>;
   readonly findAll: (options?: {
     readonly conversationId?: ConversationId;
@@ -150,6 +154,12 @@ export interface ActivityRepository {
     readonly entityId?: string;
     readonly limit?: number;
   }) => Effect.Effect<readonly ActivityEvent[], RepositoryError>;
+}
+
+/** Key/value storage for app-wide mutable settings. */
+export interface SettingsRepository {
+  readonly get: (key: string) => Effect.Effect<string | null, RepositoryError>;
+  readonly set: (key: string, value: string) => Effect.Effect<void, RepositoryError>;
 }
 
 export interface Clock {

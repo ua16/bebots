@@ -526,4 +526,99 @@ describe("OpenCodeRuntime", () => {
     const result = await Effect.runPromise(runtime.getResult(handle));
     expect(result.exitCode).toBe(124);
   });
+
+  it("switches the session model when the run requests one", async () => {
+    announceServer(proc);
+    const { fn: fetchMock, calls } = makeFetch(
+      happyHandler([
+        { id: "m-idle", type: "idle", outcome: "succeeded" },
+        { id: "m-asst", type: "assistant", content: [{ type: "text", text: "hello" }] },
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime, {
+      model: { providerID: "opencode", id: "glm-5.3-flash-free" },
+    });
+    expect(handle.sessionId).toBe("sess-1");
+
+    const switchCall = calls.find((c) => c.path === "/api/session/sess-1/model");
+    expect(switchCall?.method).toBe("POST");
+    expect(switchCall?.init?.body).toBe(
+      JSON.stringify({ model: { id: "glm-5.3-flash-free", providerID: "opencode" } }),
+    );
+    // The switch must happen before the prior-message snapshot, so the
+    // model-selection bookkeeping message is scoped to this run (issue #21).
+    const switchIndex = calls.findIndex((c) => c.path.endsWith("/model"));
+    const snapshotIndex = calls.findIndex((c) => c.path.endsWith("/message"));
+    expect(switchIndex).toBeLessThan(snapshotIndex);
+    const result = await Effect.runPromise(runtime.getResult(handle));
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("does not switch the model when no model is requested", async () => {
+    announceServer(proc);
+    const { fn: fetchMock, calls } = makeFetch(happyHandler([{ type: "idle", outcome: "succeeded" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime);
+    await drain(runtime, handle);
+    expect(calls.some((c) => c.path.endsWith("/model"))).toBe(false);
+  });
+
+  it("warns and continues when the model switch fails", async () => {
+    announceServer(proc);
+    const happy = happyHandler([
+      { id: "m-idle", type: "idle", outcome: "succeeded" },
+      { id: "m-asst", type: "assistant", content: [{ type: "text", text: "hello" }] },
+    ]);
+    const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "POST" && path.endsWith("/model")) {
+        return jsonResponse({ error: "ModelNotFoundError" }, 400);
+      }
+      return happy(method, path);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime, { model: { providerID: "ghost", id: "gone" } });
+    const result = await Effect.runPromise(runtime.getResult(handle));
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("hello");
+
+    const events = await collectEvents(runtime.streamEvents(handle));
+    const progress = events.filter((e) => e._tag === "progress") as Array<
+      Extract<RuntimeEvent, { _tag: "progress" }>
+    >;
+    expect(progress.some((e) => e.message.includes("Model ghost/gone"))).toBe(true);
+  });
+
+  it("listModels maps the /api/model catalog", async () => {
+    announceServer(proc);
+    const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path === "/api/model") {
+        return jsonResponse({
+          location: { directory: "/tmp" },
+          data: [
+            { id: "m1", modelID: "m1", providerID: "p1", name: "Model One", enabled: true },
+            { id: "m2", modelID: "m2", providerID: "p2", name: "Model Two", enabled: true, status: "beta" },
+            { id: "m3", modelID: "m3", providerID: "p3", name: "", enabled: false },
+          ],
+        });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const models = await Effect.runPromise(runtime.listModels());
+    expect(models).toHaveLength(3);
+    expect(models).toEqual([
+      { providerID: "p1", id: "m1", name: "Model One", enabled: true },
+      { providerID: "p2", id: "m2", name: "Model Two", enabled: true, status: "beta" },
+      { providerID: "p3", id: "m3", name: "m3", enabled: false },
+    ]);
+  });
 });

@@ -1,6 +1,7 @@
 export * from "./runtime.js";
 export * from "./errors.js";
 export * from "./repositories.js";
+export * from "./app-settings.js";
 export * from "./bot-service.js";
 export * from "./run-service.js";
 export * from "./conversation-service.js";

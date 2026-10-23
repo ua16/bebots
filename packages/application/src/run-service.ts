@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 
-import { Cause, Effect, Stream } from "effect";
+import { Cause, Effect, Option, Stream } from "effect";
 import type {
   BotId,
   ConversationSession,
@@ -24,6 +24,7 @@ import type {
   RunRepository,
 } from "./repositories.js";
 import { NotFoundError, RepositoryError, ServiceError, ValidationError, WorkspaceError } from "./errors.js";
+import type { AppSettingsService } from "./app-settings.js";
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -51,6 +52,8 @@ export interface RunServiceDeps {
   readonly conversationMessages?: ConversationReplyRecorder;
   /** Task result recording; runs linked to a task update its status. */
   readonly taskResults?: TaskResultRecorder;
+  /** App settings; supplies the default model when a bot has no override. */
+  readonly settings?: AppSettingsService;
   /** Global concurrency limits. */
   readonly maxConcurrentRuns?: number;
   readonly maxConcurrentRunsPerBot?: number;
@@ -99,6 +102,7 @@ export class RunService {
   private readonly conversationSessions: ConversationSessionOps | undefined;
   private readonly conversationMessages: ConversationReplyRecorder | undefined;
   private taskResults: TaskResultRecorder | undefined;
+  private readonly settings: AppSettingsService | undefined;
   private readonly maxConcurrentRuns: number;
   private readonly maxConcurrentRunsPerBot: number;
   private paused: boolean = false;
@@ -128,6 +132,7 @@ export class RunService {
       this.conversationSessions = v.conversationSessions as ConversationSessionOps | undefined;
       this.conversationMessages = v.conversationMessages as ConversationReplyRecorder | undefined;
       this.taskResults = v.taskResults as TaskResultRecorder | undefined;
+      this.settings = v.settings as AppSettingsService | undefined;
       this.maxConcurrentRuns = (v.maxConcurrentRuns as number | undefined) ?? 10;
       this.maxConcurrentRunsPerBot = (v.maxConcurrentRunsPerBot as number | undefined) ?? 3;
     } else {
@@ -197,7 +202,12 @@ export class RunService {
             );
           }
         } else {
-          storedSession = yield* sessions.findResumableSession(String(input.conversationId));
+          // Per-bot scoping: only resume a session the run's own bot recorded,
+          // never another bot's session in the same thread.
+          storedSession = yield* sessions.findResumableSession(
+            String(input.conversationId),
+            String(input.botId),
+          );
         }
         if (storedSession) {
           resumeSessionId = storedSession.runtimeSessionId;
@@ -223,12 +233,24 @@ export class RunService {
       } as Run;
       yield* self.runRepo.create(run);
 
+      // Model resolution: the bot's own override wins, then the app-wide
+      // default model. A settings failure must not block the run — the
+      // runtime then falls back to OpenCode's own default.
+      let model = bot.model ?? null;
+      if (model === null && self.settings) {
+        const defaultModel = yield* Effect.option(self.settings.getDefaultModel());
+        if (Option.isSome(defaultModel)) {
+          model = defaultModel.value;
+        }
+      }
+
       const request: RunRequest = {
         botId: input.botId,
         workingDirectory: home,
         prompt,
         sessionId: resumeSessionId,
         timeoutMs,
+        ...(model !== null && { model }),
       } as RunRequest;
 
       const handle = yield* self.runtime.startRun(request);
@@ -253,6 +275,8 @@ export class RunService {
           storedSession = yield* sessions.createSession({
             conversationId: String(input.conversationId),
             runtimeSessionId: usedSessionId,
+            // Per-bot scoping: the session belongs to the bot that started it.
+            botId: String(input.botId),
           });
         }
         conversationSessionId = storedSession?.id ?? conversationSessionId;

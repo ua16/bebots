@@ -14,8 +14,10 @@ import {
   createSqliteFileIndexRepository,
   createSqliteTaskRepository,
   createSqliteActivityRepository,
+  createSqliteSettingsRepository,
 } from "@bebots/persistence";
 import {
+  AppSettingsService,
   BotService,
   RunService,
   ConversationService,
@@ -25,8 +27,8 @@ import {
   TaskService,
   ActivityService,
 } from "@bebots/application";
-import type { BotId, RunStatus, TaskStatus } from "@bebots/domain";
-import { asBotId, asRunId, asConversationId, asTaskId } from "@bebots/domain";
+import type { BotId, ModelRef, RunStatus, TaskStatus } from "@bebots/domain";
+import { asBotId, asRunId, asConversationId, asTaskId, validateModelRef } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
 import { createMcpServer } from "./mcp";
@@ -100,6 +102,21 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
   res.end(JSON.stringify(body));
 }
 
+/**
+ * Validate an HTTP-body model field (`{ providerID, id } | null`) against the
+ * shared domain rules. `undefined` keeps the field untouched; `null` clears.
+ */
+function normalizeModelInput(value: unknown):
+  | { readonly model?: ModelRef | null }
+  | { readonly error: string } {
+  const validated = validateModelRef(value);
+  if (validated.valid) {
+    // `value` is not undefined here, so the normalized value is a ref or null.
+    return { model: validated.value ?? null };
+  }
+  return { error: `${validated.field}: ${validated.message}` };
+}
+
 /** Run an Effect task but never let a background routine take the app down. */
 function runLogged(effect: Effect.Effect<unknown, unknown>): void {
   Effect.runPromise(effect).catch((cause) =>
@@ -128,6 +145,8 @@ async function setupBotService(): Promise<void> {
     );
   }
   const workspace = createNodeBotWorkspace({ root: userData });
+  const settingsRepo = createSqliteSettingsRepository(db);
+  const settingsService = new AppSettingsService(settingsRepo);
 
   const conversationRepo = createSqliteConversationRepository(db);
   const messageRepo = createSqliteMessageRepository(db);
@@ -187,6 +206,8 @@ async function setupBotService(): Promise<void> {
     // PLAN §12 M3: succeeded conversation runs post their summary into the
     // thread as a bot reply — regardless of which path started the run.
     conversationMessages: replyRecorder,
+    // Bot model override → app default model resolution (settings v14).
+    settings: settingsService,
   });
   // Completes the reply loop: human messages in a bot conversation trigger a
   // run for a participant bot, resuming the stored session.
@@ -415,7 +436,10 @@ async function setupBotService(): Promise<void> {
       // 127.0.0.1 and is bearer-token authed with no ambient credentials, so
       // a wildcard origin is acceptable (issue #20).
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+      );
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -439,6 +463,50 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
+      // Models available to the runtime (picker data). The opencode server
+      // may not be reachable yet — surface that as 503, not a 500.
+      if (req.method === "GET" && pathname === "/api/v1/models") {
+        const runtime = runtimeInstance as { listModels?(): unknown } | null;
+        if (!runtime || typeof runtime.listModels !== "function") {
+          sendJson(res, 501, { error: "Runtime does not support a model catalog" });
+          return;
+        }
+        try {
+          const models = await Effect.runPromise(
+            (runtime.listModels as () => Effect.Effect<readonly unknown[], unknown>)(),
+          );
+          sendJson(res, 200, models);
+        } catch (e) {
+          sendJson(res, 503, { error: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+
+      // App settings: only the default model for now.
+      if (req.method === "GET" && pathname === "/api/v1/settings") {
+        const defaultModel = await Effect.runPromise(settingsService.getDefaultModel());
+        sendJson(res, 200, { defaultModel });
+        return;
+      }
+      if (req.method === "PUT" && pathname === "/api/v1/settings") {
+        const body = (await readBody(req)) as { defaultModel?: unknown };
+        const normalized = normalizeModelInput(body.defaultModel);
+        if ("error" in normalized) {
+          sendJson(res, 400, { error: normalized.error });
+          return;
+        }
+        // `undefined` is not valid for the default model itself — the field is
+        // required in the body (use `null` to unset the override).
+        if (!("model" in normalized)) {
+          sendJson(res, 400, { error: "defaultModel must be an object or null" });
+          return;
+        }
+        await Effect.runPromise(settingsService.setDefaultModel(normalized.model ?? null));
+        const defaultModel = await Effect.runPromise(settingsService.getDefaultModel());
+        sendJson(res, 200, { defaultModel });
+        return;
+      }
+
       // Bots
       if (req.method === "GET" && pathname === "/api/v1/bots") {
         const list = await Effect.runPromise(
@@ -452,12 +520,19 @@ async function setupBotService(): Promise<void> {
           name?: string;
           description?: string;
           persona?: string;
+          model?: unknown;
         };
+        const model = normalizeModelInput(body.model);
+        if ("error" in model) {
+          sendJson(res, 400, { error: model.error });
+          return;
+        }
         const bot = await Effect.runPromise(
           service.createBot({
             name: body.name ?? "New bot",
             ...(body.description !== undefined && { description: body.description }),
             ...(body.persona !== undefined && { persona: body.persona }),
+            ...("model" in model && { model: model.model }),
           }),
         );
         await ensureBotSetup(String(bot.id));
@@ -478,8 +553,22 @@ async function setupBotService(): Promise<void> {
             description?: string;
             persona?: string;
             status?: "active" | "archived";
+            model?: unknown;
           };
-          const bot = await Effect.runPromise(service.updateBot(id, body));
+          const model = normalizeModelInput(body.model);
+          if ("error" in model) {
+            sendJson(res, 400, { error: model.error });
+            return;
+          }
+          const bot = await Effect.runPromise(
+            service.updateBot(id, {
+              ...(body.name !== undefined && { name: body.name }),
+              ...(body.description !== undefined && { description: body.description }),
+              ...(body.persona !== undefined && { persona: body.persona }),
+              ...(body.status !== undefined && { status: body.status }),
+              ...("model" in model && { model: model.model }),
+            }),
+          );
           await ensureBotSetup(String(bot.id));
           sendJson(res, 200, bot);
           return;
@@ -623,11 +712,12 @@ async function setupBotService(): Promise<void> {
           return;
         }
         if (req.method === "POST") {
-          const body = (await readBody(req)) as { runtimeSessionId?: string };
+          const body = (await readBody(req)) as { runtimeSessionId?: string; botId?: string };
           const sess = await Effect.runPromise(
             conversationSessionService.createSession({
               conversationId: id,
               runtimeSessionId: body.runtimeSessionId ?? "",
+              ...(body.botId !== undefined && { botId: body.botId }),
             }),
           );
           sendJson(res, 201, sess);
