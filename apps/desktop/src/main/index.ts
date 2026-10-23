@@ -49,6 +49,22 @@ let apiEndpoint: { url: string; token: string } | null = null;
 let apiPort: number | null = null;
 let mcpHandle: { handleRequest: (req: Request) => Promise<Response> } | null = null;
 
+// Pretty-prints a JSON body for --show-mcp-logs; returns raw text if not JSON,
+// truncated to MAX_MCP_LOG_BYTES either way so huge payloads can't flood logs.
+const MAX_MCP_LOG_BYTES = 8_000;
+function formatMcpJson(text: string): string {
+  let out: string;
+  try {
+    out = JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    out = text;
+  }
+  if (out.length > MAX_MCP_LOG_BYTES) {
+    out = `${out.slice(0, MAX_MCP_LOG_BYTES)}… (${out.length - MAX_MCP_LOG_BYTES} bytes truncated)`;
+  }
+  return out || "(empty)";
+}
+
 function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -150,6 +166,10 @@ async function setupBotService(): Promise<void> {
     process.argv.includes("--show-extra-logs") ||
     process.env.SHOW_EXTRA_LOGS === "1" ||
     process.env.SHOW_EXTRA_LOGS === "true";
+  const showMcpLogs =
+    process.argv.includes("--show-mcp-logs") ||
+    process.env.SHOW_MCP_LOGS === "1" ||
+    process.env.SHOW_MCP_LOGS === "true";
   const runtime = new OpenCodeRuntime({ extraLogs });
   runtimeInstance = runtime;
   // Posts completed conversation-run summaries into the thread as bot replies.
@@ -765,6 +785,12 @@ async function setupBotService(): Promise<void> {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
         const buf = Buffer.concat(chunks);
+        if (showMcpLogs) {
+          const botId = req.headers["x-bebots-bot-id"];
+          const headerBotId = Array.isArray(botId) ? botId[0] : botId;
+          console.log(`[mcp] --> ${req.method} ${pathname} caller-bot=${headerBotId ?? "-"}`);
+          console.log(`[mcp] request: ${formatMcpJson(buf.toString("utf8"))}`);
+        }
         const request = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
           method: req.method ?? "POST",
           headers: req.headers as Record<string, string>,
@@ -774,6 +800,10 @@ async function setupBotService(): Promise<void> {
         res.statusCode = response.status;
         response.headers.forEach((value, key) => res.setHeader(key, value));
         const ab = await response.arrayBuffer();
+        if (showMcpLogs) {
+          console.log(`[mcp] <-- ${response.status} ${pathname}`);
+          console.log(`[mcp] response: ${formatMcpJson(Buffer.from(ab).toString("utf8"))}`);
+        }
         res.end(Buffer.from(ab));
         return;
       }
