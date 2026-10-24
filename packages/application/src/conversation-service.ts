@@ -17,7 +17,7 @@ import type {
   Clock,
   IdGenerator,
 } from "./repositories.js";
-import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
+import { NotFoundError, RepositoryError, ValidationError } from "./errors.js";
 
 /** Sessions older than this are expired (PLAN §5: 30 days of inactivity). */
 export const CONVERSATION_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -59,7 +59,7 @@ export interface CreateSessionInput {
 
 export interface ConversationServiceDeps {
   readonly conversationRepo: ConversationRepository;
-  readonly messageRepo?: MessageRepository;
+  readonly messageRepo: MessageRepository;
   readonly clock?: Clock;
   readonly ids?: IdGenerator;
 }
@@ -67,13 +67,13 @@ export interface ConversationServiceDeps {
 /** Owns conversation records and message persistence (PLAN §5: messaging service). */
 export class ConversationService {
   private readonly conversationRepo: ConversationRepository;
-  private readonly messageRepo: MessageRepository | null;
+  private readonly messageRepo: MessageRepository;
   private readonly clock: Clock;
   private readonly ids: IdGenerator;
 
   constructor(deps: ConversationServiceDeps) {
     this.conversationRepo = deps.conversationRepo;
-    this.messageRepo = deps.messageRepo ?? null;
+    this.messageRepo = deps.messageRepo;
     this.clock = deps.clock ?? { now: () => Date.now() };
     this.ids = deps.ids ?? { generate: () => crypto.randomUUID() };
   }
@@ -146,16 +146,11 @@ export class ConversationService {
 
   addMessage(
     input: AddMessageInput,
-  ): Effect.Effect<Message, ValidationError | RepositoryError | ServiceError> {
+  ): Effect.Effect<Message, ValidationError | RepositoryError> {
     const messageRepo = this.messageRepo;
     const clock = this.clock;
     const ids = this.ids;
     return Effect.gen(function* () {
-      if (!messageRepo) {
-        return yield* Effect.fail(
-          new ServiceError("Messaging requires a MessageRepository (built without one)"),
-        );
-      }
       const content = (input.content ?? "").toString();
       if (content.trim().length === 0) {
         return yield* Effect.fail(
@@ -180,26 +175,16 @@ export class ConversationService {
   listMessages(
     conversationId: string,
     options?: ListMessagesOptions,
-  ): Effect.Effect<readonly Message[], RepositoryError | ServiceError> {
+  ): Effect.Effect<readonly Message[], RepositoryError> {
     const messageRepo = this.messageRepo;
     return Effect.gen(function* () {
-      if (!messageRepo) {
-        return yield* Effect.fail(
-          new ServiceError("Messaging requires a MessageRepository (built without one)"),
-        );
-      }
       return yield* messageRepo.findByConversation(asConversationId(conversationId), options);
     });
   }
 
-  getMessage(id: string): Effect.Effect<Message | null, RepositoryError | ServiceError> {
+  getMessage(id: string): Effect.Effect<Message | null, RepositoryError> {
     const messageRepo = this.messageRepo;
     return Effect.gen(function* () {
-      if (!messageRepo) {
-        return yield* Effect.fail(
-          new ServiceError("Messaging requires a MessageRepository (built without one)"),
-        );
-      }
       return yield* messageRepo.findById(asMessageId(id));
     });
   }
@@ -281,13 +266,13 @@ export class ConversationSessionService implements ConversationSessionOps {
   }): Effect.Effect<readonly ConversationSession[], RepositoryError> {
     const sessionRepo = this.sessionRepo;
     return Effect.gen(function* () {
-      const filtered = yield* sessionRepo.findAll({
+      return yield* sessionRepo.findAll({
         ...(options?.conversationId !== undefined && {
           conversationId: asConversationId(options.conversationId),
         }),
         ...(options?.status !== undefined && { status: options.status }),
+        ...(options?.limit !== undefined && { limit: options.limit }),
       });
-      return options?.limit !== undefined ? filtered.slice(0, options.limit) : filtered;
     });
   }
 

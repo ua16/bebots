@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
 import { asBotId, asConversationId, asRunId } from "@bebots/domain";
 import type { ConversationSession } from "@bebots/domain";
-import { RunService, RunSupervisor } from "./run-service.js";
+import { RunService } from "./run-service.js";
 import { ConversationSessionService } from "./conversation-service.js";
 import { AppSettingsService } from "./app-settings.js";
 import type {
@@ -229,7 +229,7 @@ describe("RunService", () => {
     };
     const clock: Clock = { now: () => 100 };
     const ids: IdGenerator = { generate: () => "run-1" };
-    const service = new RunService(runRepo, botRepo, workspace, runtime, clock, ids);
+    const service = new RunService({ runRepo, botRepo, workspace, runtime, clock, ids });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -324,14 +324,14 @@ describe("RunService", () => {
       streamEvents: () => Stream.empty as any,
       getResult: () => Effect.succeed({ exitCode: 0, summary: "" } as RunResult),
     };
-    const service = new RunService(
+    const service = new RunService({
       runRepo,
       botRepo,
       workspace,
       runtime,
-      { now: () => 1 },
-      { generate: () => "r1" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "r1" },
+    });
     await expect(
       Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" })),
     ).rejects.toThrow();
@@ -393,14 +393,14 @@ describe("RunService", () => {
       streamEvents: () => Stream.empty as Stream.Stream<RuntimeEvent, RuntimeError>,
       getResult: () => Effect.succeed({ exitCode: 0, summary: "ok" } as RunResult),
     };
-    const service = new RunService(
+    const service = new RunService({
       runRepo,
       botRepo,
       workspace,
-      runtime2,
-      { now: () => 1 },
-      { generate: () => "run-1" },
-    );
+      runtime: runtime2,
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-1" },
+    });
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
     );
@@ -472,14 +472,14 @@ describe("RunService", () => {
         Stream.fromIterable([{ _tag: "progress", message: "x" }] as RuntimeEvent[]),
       getResult: () => Effect.succeed({ exitCode: 1, summary: "fail" } as RunResult),
     };
-    const service = new RunService(
+    const service = new RunService({
       runRepo,
       botRepo,
       workspace,
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-1" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-1" },
+    });
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
     );
@@ -567,33 +567,15 @@ function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
 }
 
 describe("RunService branches", () => {
-  it("accepts a deps object using the alternative key names", async () => {
-    const { repo } = makeRunRepo();
+  it("rejects an invalid generated run id", async () => {
     const service = new RunService({
-      runRepository: repo,
-      botRepository: makeBotRepo(),
+      runRepo: makeRunRepo().repo,
+      botRepo: makeBotRepo(),
       workspace: makeWorkspace(),
       runtime: makeRuntime(),
-      clock: { now: () => 5 },
-      idGenerator: { generate: () => "run-x" },
-    } as never);
-
-    const run = await Effect.runPromise(
-      service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
-    );
-    expect(run.id).toBe("run-x");
-    expect(run.status).toBe("running");
-  });
-
-  it("rejects an invalid generated run id", async () => {
-    const service = new RunService(
-      makeRunRepo().repo,
-      makeBotRepo(),
-      makeWorkspace(),
-      makeRuntime(),
-      { now: () => 1 },
-      { generate: () => "   " },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "   " },
+    });
     await expect(
       Effect.runPromise(service.startRun({ botId: asBotId("bot-1"), prompt: "hi" })),
     ).rejects.toThrow();
@@ -604,14 +586,14 @@ describe("RunService branches", () => {
     const runtime = makeRuntime({
       getResult: () => Effect.fail({ _tag: "RuntimeError", message: "nope" } as RuntimeError),
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-fail" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-fail" },
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -627,14 +609,14 @@ describe("RunService branches", () => {
     const runtime = makeRuntime({
       getResult: () => Effect.never as Effect.Effect<RunResult, RuntimeError>,
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-wait" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-wait" },
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -645,14 +627,14 @@ describe("RunService branches", () => {
 
   it("cancels a run without an active handle and returns null for unknown runs", async () => {
     const { repo, store } = makeRunRepo();
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
-      makeRuntime(),
-      { now: () => 1 },
-      { generate: () => "run-c" },
-    );
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
+      runtime: makeRuntime(),
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-c" },
+    });
     // Seed a run directly so no runtime handle is registered for it.
     store.set("run-seed", {
       id: "run-seed",
@@ -672,43 +654,19 @@ describe("RunService branches", () => {
     expect(missing).toBeNull();
   });
 
-  it("RunSupervisor is a RunService", () => {
-    const supervisor = new RunSupervisor(
-      makeRunRepo().repo,
-      makeBotRepo(),
-      makeWorkspace(),
-      makeRuntime(),
-      { now: () => 1 },
-      { generate: () => "run-s" },
-    );
-    expect(supervisor).toBeInstanceOf(RunService);
-  });
-
-  it("treats a non-object first argument as a positional repository", () => {
-    const service = new RunService(
-      null as never,
-      makeBotRepo(),
-      makeWorkspace(),
-      makeRuntime(),
-      { now: () => 1 },
-      { generate: () => "run-null" },
-    );
-    expect(service).toBeInstanceOf(RunService);
-  });
-
   it("rejects a missing prompt and falls back when a session id is omitted", async () => {
     const { repo } = makeRunRepo();
     const runtime = makeRuntime({
       startRun: () => Effect.succeed({ runId: "rt-1" } as RunHandle),
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-ns" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-ns" },
+    });
 
     await expect(
       Effect.runPromise(service.startRun({ botId: asBotId("bot-1") } as never)),
@@ -730,14 +688,14 @@ describe("RunService branches", () => {
           message: "stream boom",
         } as RuntimeError) as Stream.Stream<RuntimeEvent, RuntimeError>,
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-stream" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-stream" },
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -758,14 +716,14 @@ describe("RunService branches", () => {
           catch: (cause) => cause as RuntimeError,
         }),
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-err" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-err" },
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -799,14 +757,14 @@ describe("RunService branches", () => {
     const runtime = makeRuntime({
       getResult: () => Effect.fail({ _tag: "RuntimeError", message: "later" } as RuntimeError),
     });
-    const service = new RunService(
-      repo,
-      makeBotRepo(),
-      makeWorkspace(),
+    const service = new RunService({
+      runRepo: repo,
+      botRepo: makeBotRepo(),
+      workspace: makeWorkspace(),
       runtime,
-      { now: () => 1 },
-      { generate: () => "run-1" },
-    );
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-1" },
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi" }),
@@ -840,10 +798,6 @@ describe("RunService session scoping", () => {
           return Effect.succeed(s);
         },
         findById: (id) => Effect.succeed(rows.get(String(id)) ?? null),
-        findByConversation: (cid) =>
-          Effect.succeed(
-            [...rows.values()].filter((s) => String(s.conversationId) === String(cid)),
-          ),
         findLatestByConversation: (cid, options) =>
           Effect.succeed(
             [...rows.values()]
@@ -934,15 +888,15 @@ describe("RunService session scoping", () => {
       getResult: () => Effect.succeed({ exitCode: 0, summary: "done" } as RunResult),
     };
     let runTick = 0;
-    const service = new RunService(
+    const service = new RunService({
       runRepo,
       botRepo,
       workspace,
       runtime,
-      { now: () => 100 + runTick++ },
-      { generate: () => `run-${++runTick}` },
-      sessions,
-    );
+      clock: { now: () => 100 + runTick++ },
+      ids: { generate: () => `run-${++runTick}` },
+      conversationSessions: sessions,
+    });
 
     const conv = asConversationId("123e4567-e89b-12d3-a456-426614174001");
     // Bot-1's thread run records its own session.

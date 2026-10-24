@@ -1,6 +1,6 @@
 import { Cause, Effect } from "effect";
-import { asTaskId } from "@bebots/domain";
-import type { BotId, RunId, Task, TaskId, TaskStatus } from "@bebots/domain";
+import { asBotId, asRunId, asTaskId } from "@bebots/domain";
+import type { Task, TaskId, TaskStatus } from "@bebots/domain";
 import { canTransitionTask } from "@bebots/domain";
 import type {
   TaskRepository,
@@ -46,40 +46,14 @@ export class TaskService implements TaskResultRecorder {
   private readonly maxDepth: number;
   private readonly maxParallel: number;
 
-  constructor(
-    depsOrTaskRepo: TaskServiceDeps | TaskRepository,
-    botRepo?: BotRepository,
-    runService?: RunService,
-    clock?: Clock,
-    ids?: IdGenerator,
-    maxDepth?: number,
-    maxParallel?: number,
-  ) {
-    let deps: TaskServiceDeps;
-    if (
-      typeof depsOrTaskRepo === "object" &&
-      depsOrTaskRepo !== null &&
-      "taskRepo" in (depsOrTaskRepo as unknown as Record<string, unknown>)
-    ) {
-      deps = depsOrTaskRepo as TaskServiceDeps;
-    } else {
-      deps = {
-        taskRepo: depsOrTaskRepo as TaskRepository,
-        botRepo: botRepo as BotRepository,
-        runService: runService as RunService,
-        ...(clock !== undefined && { clock }),
-        ...(ids !== undefined && { ids }),
-        ...(maxDepth !== undefined && { maxDepth }),
-        ...(maxParallel !== undefined && { maxParallel }),
-      };
-    }
+  constructor(deps: TaskServiceDeps) {
     this.taskRepo = deps.taskRepo;
     this.botRepo = deps.botRepo;
     this.runService = deps.runService;
     this.clock = deps.clock ?? { now: () => Date.now() };
     this.ids = deps.ids ?? { generate: () => crypto.randomUUID() };
-    this.maxDepth = deps.maxDepth ?? maxDepth ?? MAX_TASK_DEPTH;
-    this.maxParallel = deps.maxParallel ?? maxParallel ?? MAX_PARALLEL_DELEGATIONS;
+    this.maxDepth = deps.maxDepth ?? MAX_TASK_DEPTH;
+    this.maxParallel = deps.maxParallel ?? MAX_PARALLEL_DELEGATIONS;
   }
 
   recordTaskResult(
@@ -103,7 +77,7 @@ export class TaskService implements TaskResultRecorder {
       const updated: Task = {
         ...existing,
         status: nextStatus,
-        resultRunId: runId as unknown as RunId,
+        resultRunId: asRunId(runId),
         ...(summary !== undefined && { resultSummary: summary }),
         updatedAt: clock.now(),
       };
@@ -128,7 +102,7 @@ export class TaskService implements TaskResultRecorder {
       if (assignee.length === 0) {
         return yield* Effect.fail(new ValidationError("assignee", "Assignee is required"));
       }
-      const bot = yield* botRepo.findById(assignee as BotId);
+      const bot = yield* botRepo.findById(asBotId(assignee));
       if (!bot || bot.status !== "active") {
         return yield* Effect.fail(new NotFoundError("Bot", assignee));
       }
@@ -198,7 +172,7 @@ export class TaskService implements TaskResultRecorder {
       // Start run.
       const run = yield* runService
         .startRun({
-          botId: task.assignee as BotId,
+          botId: asBotId(task.assignee),
           prompt: task.description,
           triggerType: "task",
           taskId: task.id,
@@ -264,7 +238,7 @@ export class TaskService implements TaskResultRecorder {
         return task;
       }
       if (task.resultRunId) {
-        yield* runService.cancelRun(task.resultRunId as RunId).pipe(Effect.ignore);
+        yield* runService.cancelRun(asRunId(task.resultRunId)).pipe(Effect.ignore);
       }
       if (!canTransitionTask(task.status, "cancelled")) {
         return yield* Effect.fail(new ServiceError("Invalid task transition"));

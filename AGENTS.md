@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Packages
+
+Use `bun` instead of `npm` and `pnpm` for all package management and script running (`bun install`, `bun run <script>`, `bunx`). Never use `npm` or `pnpm`.
+
 ## Agent skills
 
 ### Issue tracker

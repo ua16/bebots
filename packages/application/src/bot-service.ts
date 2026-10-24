@@ -30,13 +30,25 @@ function validateName(name: string): void {
   }
 }
 
+export interface BotServiceDeps {
+  readonly repo: BotRepository;
+  readonly workspace: BotWorkspace;
+  readonly clock: Clock;
+  readonly ids: IdGenerator;
+}
+
 export class BotService {
-  constructor(
-    private readonly repo: BotRepository,
-    private readonly workspace: BotWorkspace,
-    private readonly clock: Clock,
-    private readonly ids: IdGenerator,
-  ) {}
+  private readonly repo: BotRepository;
+  private readonly workspace: BotWorkspace;
+  private readonly clock: Clock;
+  private readonly ids: IdGenerator;
+
+  constructor(deps: BotServiceDeps) {
+    this.repo = deps.repo;
+    this.workspace = deps.workspace;
+    this.clock = deps.clock;
+    this.ids = deps.ids;
+  }
 
   createBot(
     input: CreateBotInput,

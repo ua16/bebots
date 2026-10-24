@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Cause, Effect, Exit, Stream } from "effect";
 import type { Bot, Conversation, ConversationSession, Message, Run } from "@bebots/domain";
 import { asBotId, asConversationId } from "@bebots/domain";
-import { BotReplyRecorder, ConversationRunCoordinator } from "./conversation-run-coordinator.js";
+import { ConversationRunCoordinator } from "./conversation-run-coordinator.js";
 import { ConversationService, ConversationSessionService } from "./conversation-service.js";
 import { NotFoundError } from "./errors.js";
 import { RunService } from "./run-service.js";
@@ -70,10 +70,6 @@ function makeSessionRepo(): ConversationSessionRepository {
       return Effect.succeed(s);
     },
     findById: (id) => Effect.succeed(sessions.get(String(id)) ?? null),
-    findByConversation: (conversationId) =>
-      Effect.succeed(
-        [...sessions.values()].filter((s) => String(s.conversationId) === String(conversationId)),
-      ),
     findLatestByConversation: (conversationId, options) =>
       Effect.succeed(
         [...sessions.values()]
@@ -173,15 +169,15 @@ function makeEnv(participants: readonly string[], runtime: AgentRuntime): TestEn
     clock: fixedClock,
     ids,
   });
-  const runService = new RunService(
-    makeRunRepo(),
+  const runService = new RunService({
+    runRepo: makeRunRepo(),
     botRepo,
     workspace,
     runtime,
-    fixedClock,
+    clock: fixedClock,
     ids,
-    sessions,
-  );
+    conversationSessions: sessions,
+  });
   const coordinator = new ConversationRunCoordinator({
     conversationService,
     runService,
@@ -263,11 +259,12 @@ describe("ConversationRunCoordinator", () => {
   });
 });
 
-describe("BotReplyRecorder", () => {
+describe("ConversationRunCoordinator.recordBotReply", () => {
   it("persists the run summary as a bot reply from the run's bot", async () => {
     const env = makeEnv([], makeRuntime());
-    const recorder = new BotReplyRecorder({ conversationService: env.conversationService });
-    await Effect.runPromise(recorder.recordBotReply(conversationId, "bot-1", "the answer"));
+    await Effect.runPromise(
+      env.coordinator.recordBotReply(conversationId, "bot-1", "the answer"),
+    );
     const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
     expect(thread).toHaveLength(1);
     expect(thread[0]?.senderType).toBe("bot");
@@ -305,7 +302,14 @@ describe("duplicate reply runs", () => {
       clock: fixedClock,
       ids,
     });
-    const runService = new RunService(makeRunRepo(), twoBotRepo, workspace, runtime, fixedClock, ids);
+    const runService = new RunService({
+      runRepo: makeRunRepo(),
+      botRepo: twoBotRepo,
+      workspace,
+      runtime,
+      clock: fixedClock,
+      ids,
+    });
     const coordinator = new ConversationRunCoordinator({ conversationService, runService, botRepo: twoBotRepo });
 
     const created = await Effect.runPromise(

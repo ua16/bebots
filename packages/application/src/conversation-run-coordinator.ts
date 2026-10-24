@@ -21,59 +21,6 @@ export interface ConversationReplyRecorder {
   ) => Effect.Effect<void, ValidationError | RepositoryError | ServiceError>;
 }
 
-/**
- * Persists a completed conversation run's summary as a bot reply. Kept as its
- * own tiny collaborator so RunService can depend on this narrow interface
- * instead of the messaging service.
- */
-export class BotReplyRecorder implements ConversationReplyRecorder {
-  private readonly conversationService: ConversationService;
-  private trigger:
-    | ((
-        conversationId: string,
-        message: Message,
-        senderType: MessageSenderType,
-        senderId: string | null,
-      ) => Effect.Effect<void, unknown>)
-    | null = null;
-
-  constructor(deps: { readonly conversationService: ConversationService }) {
-    this.conversationService = deps.conversationService;
-  }
-
-  setTrigger(
-    trigger: (
-      conversationId: string,
-      message: Message,
-      senderType: MessageSenderType,
-      senderId: string | null,
-    ) => Effect.Effect<void, unknown>,
-  ): void {
-    this.trigger = trigger;
-  }
-
-  recordBotReply(
-    conversationId: string,
-    botId: string,
-    content: string,
-  ): Effect.Effect<void, ValidationError | RepositoryError | ServiceError> {
-    const conversationService = this.conversationService;
-    const trigger = this.trigger;
-    return Effect.gen(function* () {
-      if (content.trim().length === 0) return;
-      const message = yield* conversationService.addMessage({
-        conversationId,
-        content,
-        senderType: "bot",
-        senderId: botId,
-      });
-      if (trigger) {
-        yield* trigger(conversationId, message, "bot", botId).pipe(Effect.ignore);
-      }
-    });
-  }
-}
-
 export interface SendMessageResult {
   readonly message: Message;
   /** Reply run started for the message, if any; null when not triggered or the run could not start. */
@@ -92,13 +39,13 @@ export interface ConversationRunCoordinatorDeps {
  * Completes the reply loop between messaging and runs (PLAN §12 M3):
  * a human message in a direct conversation with an active bot participant
  * triggers a run for that bot resuming the stored session. The bot's answer
- * is recorded by BotReplyRecorder when RunService finalizes the run — never
- * by the coordinator itself, so any conversation run gets recorded the same
- * way.
+ * is recorded through `recordBotReply` (this coordinator, satisfying
+ * RunService's `ConversationReplyRecorder`) when RunService finalizes the
+ * run — so any conversation run gets recorded the same way.
  */
 export const MAX_MESSAGE_HOP_DEPTH = 3;
 
-export class ConversationRunCoordinator {
+export class ConversationRunCoordinator implements ConversationReplyRecorder {
   private readonly conversationService: ConversationService;
   private readonly runService: RunService;
   private readonly botRepo: BotRepository;
@@ -250,6 +197,35 @@ export class ConversationRunCoordinator {
 
       return runs as readonly Run[];
     }) as Effect.Effect<readonly Run[], NotFoundError | ValidationError | RepositoryError | ServiceError>;
+  }
+
+  /**
+   * Posts a completed run's summary into the thread as a bot reply and lets
+   * it propagate (mention relay, hop bookkeeping) like any persisted bot
+   * message. Satisfies RunService's `ConversationReplyRecorder` directly —
+   * no separate adapter class or mutable trigger wiring.
+   */
+  recordBotReply(
+    conversationId: string,
+    botId: string,
+    content: string,
+  ): Effect.Effect<void, ValidationError | RepositoryError | ServiceError> {
+    const conversationService = this.conversationService;
+    const self = this;
+    return Effect.gen(function* () {
+      if (content.trim().length === 0) return;
+      const message = yield* conversationService.addMessage({
+        conversationId,
+        content,
+        senderType: "bot",
+        senderId: botId,
+      });
+      // Propagation failures are ignored: the reply itself is already stored,
+      // and delivery must not depend on the relay hop.
+      yield* self
+        .triggerForMessage(conversationId, message, "bot", botId)
+        .pipe(Effect.ignore);
+    });
   }
 
   /** Trigger recipients for an already-persisted message (used by bot replies). */

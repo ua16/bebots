@@ -78,7 +78,14 @@ describe("TaskService smoke", () => {
       getResult: () => Effect.succeed({ exitCode: 0, summary: "done" } as RunResult),
     };
     const workspace: BotWorkspace = { root: "/tmp", ensureHome: ()=>Effect.succeed("/tmp"), writePersona:()=>Effect.void, homePath:()=>"/tmp" };
-    const runService = new RunService(runRepo, botRepo, workspace, runtime, { now:()=>1 }, { generate:()=> "run-1" });
+    const runService = new RunService({
+      runRepo,
+      botRepo,
+      workspace,
+      runtime,
+      clock: { now: () => 1 },
+      ids: { generate: () => "run-1" },
+    });
     const taskService = new TaskService({ taskRepo, botRepo, runService, clock: { now:()=>1 }, ids: { generate:()=> "task-1" } });
     runService.setTaskResults(taskService);
     const task = await Effect.runPromise(taskService.delegate({ requester: "human", assignee: "bot-1", description: "do thing" }));

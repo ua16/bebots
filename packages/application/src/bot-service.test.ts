@@ -39,7 +39,7 @@ describe("BotService", () => {
     };
     const clock: Clock = { now: () => 42 };
     const ids: IdGenerator = { generate: () => "bot-1" };
-    const service = new BotService(repo, workspace, clock, ids);
+    const service = new BotService({ repo, workspace, clock, ids });
 
     const bot = await Effect.runPromise(
       service.createBot({ name: "Alice", description: "d", persona: "hi" }),
@@ -74,7 +74,12 @@ describe("BotService", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/${id}`,
     };
-    const service = new BotService(repo, workspace, { now: () => 1 }, { generate: () => "x" });
+    const service = new BotService({
+      repo,
+      workspace,
+      clock: { now: () => 1 },
+      ids: { generate: () => "x" },
+    });
     await expect(Effect.runPromise(service.createBot({ name: "   " }))).rejects.toThrow();
   });
 });

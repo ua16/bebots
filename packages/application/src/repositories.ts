@@ -79,9 +79,6 @@ export interface ConversationSessionRepository {
   readonly findById: (
     id: ConversationSessionId,
   ) => Effect.Effect<ConversationSession | null, RepositoryError>;
-  readonly findByConversation: (
-    conversationId: ConversationId,
-  ) => Effect.Effect<readonly ConversationSession[], RepositoryError>;
   readonly findLatestByConversation: (
     conversationId: ConversationId,
     options?: {
@@ -93,6 +90,7 @@ export interface ConversationSessionRepository {
   readonly findAll: (options?: {
     readonly conversationId?: ConversationId;
     readonly status?: ConversationSession["status"];
+    readonly limit?: number;
   }) => Effect.Effect<readonly ConversationSession[], RepositoryError>;
   readonly update: (
     session: ConversationSession,

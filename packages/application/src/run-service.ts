@@ -80,18 +80,6 @@ export interface StartRunInput {
   readonly newSession?: boolean;
 }
 
-function isDeps(value: unknown): value is RunServiceDeps {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  const hasRunRepo = "runRepo" in v || "runRepository" in v;
-  const hasBotRepo = "botRepo" in v || "botRepository" in v;
-  const hasWorkspace = "workspace" in v;
-  const hasRuntime = "runtime" in v;
-  const hasClock = "clock" in v;
-  const hasIds = "ids" in v || "idGenerator" in v;
-  return hasRunRepo && hasBotRepo && hasWorkspace && hasRuntime && hasClock && hasIds;
-}
-
 export class RunService {
   private readonly runRepo: RunRepository;
   private readonly botRepo: BotRepository;
@@ -108,46 +96,19 @@ export class RunService {
   private paused: boolean = false;
   private readonly handles = new Map<string, RunHandle>();
 
-  constructor(
-    runRepoOrDeps: RunRepository | RunServiceDeps,
-    botRepo?: BotRepository,
-    workspace?: BotWorkspace,
-    runtime?: AgentRuntime,
-    clock?: Clock,
-    ids?: IdGenerator,
-    conversationSessions?: ConversationSessionOps,
-    conversationMessages?: ConversationReplyRecorder,
-    taskResults?: TaskResultRecorder,
-    maxConcurrentRuns?: number,
-    maxConcurrentRunsPerBot?: number,
-  ) {
-    if (isDeps(runRepoOrDeps)) {
-      const v = runRepoOrDeps as unknown as Record<string, unknown>;
-      this.runRepo = (v.runRepo ?? v.runRepository) as RunRepository;
-      this.botRepo = (v.botRepo ?? v.botRepository) as BotRepository;
-      this.workspace = v.workspace as BotWorkspace;
-      this.runtime = v.runtime as AgentRuntime;
-      this.clock = v.clock as Clock;
-      this.ids = (v.ids ?? v.idGenerator) as IdGenerator;
-      this.conversationSessions = v.conversationSessions as ConversationSessionOps | undefined;
-      this.conversationMessages = v.conversationMessages as ConversationReplyRecorder | undefined;
-      this.taskResults = v.taskResults as TaskResultRecorder | undefined;
-      this.settings = v.settings as AppSettingsService | undefined;
-      this.maxConcurrentRuns = (v.maxConcurrentRuns as number | undefined) ?? 10;
-      this.maxConcurrentRunsPerBot = (v.maxConcurrentRunsPerBot as number | undefined) ?? 3;
-    } else {
-      this.runRepo = runRepoOrDeps;
-      this.botRepo = botRepo as BotRepository;
-      this.workspace = workspace as BotWorkspace;
-      this.runtime = runtime as AgentRuntime;
-      this.clock = clock as Clock;
-      this.ids = ids as IdGenerator;
-      this.conversationSessions = conversationSessions;
-      this.conversationMessages = conversationMessages;
-      this.taskResults = taskResults;
-      this.maxConcurrentRuns = maxConcurrentRuns ?? 10;
-      this.maxConcurrentRunsPerBot = maxConcurrentRunsPerBot ?? 3;
-    }
+  constructor(deps: RunServiceDeps) {
+    this.runRepo = deps.runRepo;
+    this.botRepo = deps.botRepo;
+    this.workspace = deps.workspace;
+    this.runtime = deps.runtime;
+    this.clock = deps.clock;
+    this.ids = deps.ids;
+    this.conversationSessions = deps.conversationSessions;
+    this.conversationMessages = deps.conversationMessages;
+    this.taskResults = deps.taskResults;
+    this.settings = deps.settings;
+    this.maxConcurrentRuns = deps.maxConcurrentRuns ?? 10;
+    this.maxConcurrentRunsPerBot = deps.maxConcurrentRunsPerBot ?? 3;
   }
 
   startRun(
@@ -490,5 +451,3 @@ export class RunService {
     });
   }
 }
-
-export class RunSupervisor extends RunService {}

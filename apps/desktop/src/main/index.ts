@@ -22,11 +22,11 @@ import {
   RunService,
   ConversationService,
   ConversationSessionService,
-  BotReplyRecorder,
   ConversationRunCoordinator,
   TaskService,
   ActivityService,
 } from "@bebots/application";
+import type { ConversationReplyRecorder } from "@bebots/application";
 import type { BotId, ModelRef, RunStatus, TaskStatus } from "@bebots/domain";
 import { asBotId, asRunId, asConversationId, asTaskId, validateModelRef } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
@@ -173,14 +173,12 @@ async function setupBotService(): Promise<void> {
   indexerInstance = indexer;
   indexer.begin();
 
-  const service = new BotService(
+  const service = new BotService({
     repo,
     workspace,
-    { now: () => Date.now() },
-    {
-      generate: () => randomUUID(),
-    },
-  );
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+  });
   const extraLogs =
     process.argv.includes("--show-extra-logs") ||
     process.env.SHOW_EXTRA_LOGS === "1" ||
@@ -191,8 +189,15 @@ async function setupBotService(): Promise<void> {
     process.env.SHOW_MCP_LOGS === "true";
   const runtime = new OpenCodeRuntime({ extraLogs });
   runtimeInstance = runtime;
-  // Posts completed conversation-run summaries into the thread as bot replies.
-  const replyRecorder = new BotReplyRecorder({ conversationService });
+  // Run finalization posts completed conversation runs into the thread as bot
+  // replies through the coordinator (declared just below) — PLAN §12 M3:
+  // regardless of which path started the run. The annotated recordBotReply
+  // closure resolves the coordinator after construction, so the two services
+  // can reference each other without a mutable setter.
+  const conversationReplyRecorder: ConversationReplyRecorder = {
+    recordBotReply: (conversationId, botId, content) =>
+      conversationCoordinator.recordBotReply(conversationId, botId, content),
+  };
   const runService = new RunService({
     runRepo,
     botRepo: repo,
@@ -203,9 +208,7 @@ async function setupBotService(): Promise<void> {
     // PLAN §6.4: resume the stored conversation session by default; rotate it
     // transparently on expiry/failure.
     conversationSessions: conversationSessionService,
-    // PLAN §12 M3: succeeded conversation runs post their summary into the
-    // thread as a bot reply — regardless of which path started the run.
-    conversationMessages: replyRecorder,
+    conversationMessages: conversationReplyRecorder,
     // Bot model override → app default model resolution (settings v14).
     settings: settingsService,
   });
@@ -216,9 +219,6 @@ async function setupBotService(): Promise<void> {
     runService,
     botRepo: repo,
   });
-  replyRecorder.setTrigger((conversationId, message, senderType, senderId) =>
-    conversationCoordinator.triggerForMessage(conversationId, message, senderType, senderId),
-  );
   const taskService = new TaskService({
     taskRepo,
     botRepo: repo,
@@ -251,7 +251,7 @@ async function setupBotService(): Promise<void> {
     const roster = bots
       .filter((b) => b.id !== botId && b.status === "active")
       .map((b) => `- ${b.id} (${b.name})`)
-      .join("\\n");
+      .join("\n");
     return [
       "",
       "",
@@ -264,7 +264,7 @@ async function setupBotService(): Promise<void> {
       roster || "(none)",
       "You may also include @botId in a reply to route a message.",
       "<!-- /bebots-protocol -->",
-    ].join("\\n");
+    ].join("\n");
   };
   const writeBotMcpConfig = async (botId: string) => {
     if (!apiEndpoint) return;
@@ -295,8 +295,10 @@ async function setupBotService(): Promise<void> {
     } catch {
       persona = "";
     }
-    // Strip any previous protocol block.
+    // Strip any previous protocol block (including the corrupted variant
+    // written by the pre-fix join("\\n"), which embedded literal "\n" text).
     persona = persona.replace(/\n\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/, "");
+    persona = persona.replace(/\\n\\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/, "");
     const bots = await Effect.runPromise(service.listBots(false));
     const block = protocolBlock(botId, bots.map((b) => ({ id: String(b.id), name: b.name, status: b.status })));
     fsMod.writeFileSync(agentsPath, persona + block, "utf8");

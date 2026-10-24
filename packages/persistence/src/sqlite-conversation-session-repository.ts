@@ -71,23 +71,6 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
     });
   }
 
-  findByConversation(
-    conversationId: ConversationId,
-  ): Effect.Effect<readonly ConversationSession[], RepositoryError> {
-    const db = this.db;
-    return Effect.try({
-      try: () => {
-        const rows = db
-          .prepare(
-            "SELECT * FROM conversation_sessions WHERE conversation_id = ? ORDER BY last_used_at DESC",
-          )
-          .all(String(conversationId)) as unknown as SessionRow[];
-        return rows.map(rowToSession);
-      },
-      catch: (cause) => new RepositoryError("Failed to list conversation sessions", cause),
-    });
-  }
-
   findLatestByConversation(
     conversationId: ConversationId,
     options?: {
@@ -128,6 +111,7 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
   findAll(options?: {
     readonly conversationId?: ConversationId;
     readonly status?: string;
+    readonly limit?: number;
   }): Effect.Effect<readonly ConversationSession[], RepositoryError> {
     const db = this.db;
     return Effect.try({
@@ -143,9 +127,15 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
           params.push(options.status);
         }
         const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+        // In-SQL paging: the interface's `limit` clause must not pull every
+        // row into memory.
+        const limitClause = options?.limit !== undefined ? " LIMIT ?" : "";
+        const allParams = options?.limit !== undefined ? [...params, options.limit] : params;
         const rows = db
-          .prepare(`SELECT * FROM conversation_sessions ${where} ORDER BY last_used_at DESC`)
-          .all(...params) as unknown as SessionRow[];
+          .prepare(
+            `SELECT * FROM conversation_sessions ${where} ORDER BY last_used_at DESC${limitClause}`,
+          )
+          .all(...allParams) as unknown as SessionRow[];
         return rows.map(rowToSession);
       },
       catch: (cause) => new RepositoryError("Failed to list conversation sessions", cause),

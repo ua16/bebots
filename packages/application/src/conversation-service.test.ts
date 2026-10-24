@@ -27,12 +27,6 @@ function makeSessionRepo(): ConversationSessionRepository {
       return Effect.succeed(session);
     },
     findById: (id) => Effect.succeed(sessions.get(id) ?? null),
-    findByConversation: (conversationId) =>
-      Effect.succeed(
-        [...sessions.values()]
-          .filter((s) => String(s.conversationId) === String(conversationId))
-          .sort((a, b) => b.lastUsedAt - a.lastUsedAt),
-      ),
     findLatestByConversation: (conversationId, options) =>
       Effect.succeed(
         [...sessions.values()]
@@ -274,15 +268,15 @@ describe("RunService conversation resume contract", () => {
       ids,
     });
     const runtime = makeRuntime(() => "sess-new");
-    const service = new RunService(
-      makeRunRepo(),
+    const service = new RunService({
+      runRepo: makeRunRepo(),
       botRepo,
       workspace,
       runtime,
-      fixedClock,
+      clock: fixedClock,
       ids,
-      sessions,
-    );
+      conversationSessions: sessions,
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi", conversationId }),
@@ -310,15 +304,15 @@ describe("RunService conversation resume contract", () => {
       requestedSessionId = requested;
       return requested ?? "sess-stored";
     });
-    const service = new RunService(
-      makeRunRepo(),
+    const service = new RunService({
+      runRepo: makeRunRepo(),
       botRepo,
       workspace,
       runtime,
-      fixedClock,
+      clock: fixedClock,
       ids,
-      sessions,
-    );
+      conversationSessions: sessions,
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi", conversationId }),
@@ -345,15 +339,15 @@ describe("RunService conversation resume contract", () => {
     const runtime = makeRuntime((requested) =>
       requested === "sess-stale" ? "sess-fresh" : (requested ?? "sess-fresh"),
     );
-    const service = new RunService(
-      makeRunRepo(),
+    const service = new RunService({
+      runRepo: makeRunRepo(),
       botRepo,
       workspace,
       runtime,
-      fixedClock,
+      clock: fixedClock,
       ids,
-      sessions,
-    );
+      conversationSessions: sessions,
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi", conversationId }),
@@ -375,17 +369,17 @@ describe("RunService conversation resume contract", () => {
     });
     const replies: Array<{ conversationId: string; botId: string; content: string }> = [];
     const runtime = makeRuntime(() => "sess-new");
-    const service = new RunService(
-      makeRunRepo(),
+    const service = new RunService({
+      runRepo: makeRunRepo(),
       botRepo,
       workspace,
       runtime,
-      fixedClock,
+      clock: fixedClock,
       ids,
-      sessions,
+      conversationSessions: sessions,
       // Full reply loop glue: a succeeded conversation run posts its answer
       // into the thread as a bot message.
-      {
+      conversationMessages: {
         recordBotReply: (replyConversationId, replyBotId, content) =>
           Effect.sync(() => {
             replies.push({
@@ -395,7 +389,7 @@ describe("RunService conversation resume contract", () => {
             });
           }),
       },
-    );
+    });
 
     const run = await Effect.runPromise(
       service.startRun({ botId: asBotId("bot-1"), prompt: "hi", conversationId }),
@@ -418,15 +412,15 @@ describe("RunService conversation resume contract", () => {
       ids,
     });
     const runtime = makeRuntime(() => "sess-x");
-    const service = new RunService(
-      makeRunRepo(),
+    const service = new RunService({
+      runRepo: makeRunRepo(),
       botRepo,
       workspace,
       runtime,
-      fixedClock,
+      clock: fixedClock,
       ids,
-      sessions,
-    );
+      conversationSessions: sessions,
+    });
 
     const exit = await Effect.runPromiseExit(
       service.startRun({
