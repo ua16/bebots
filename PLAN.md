@@ -479,8 +479,12 @@ not by directly invoking each other's process.
 - Bot-to-bot delegation has a maximum depth and/or hop count.
 - Message-triggered recipient sessions count as hops and are subject
   to the same limits.
-- Bot-to-bot messages start a new recipient session; the sender is
-  treated as the user for that session.
+- Bot-to-bot `send_message` without an explicit conversation id pins a
+  direct conversation to the (caller, target) pair for the caller's
+  current turn, so the target keeps answering from the same resumable
+  session; the sender is treated as the user for that session. The pin
+  releases when the caller records a reply of its own (answers the user)
+  or after a sliding inactivity expiry.
 - Parallel delegation is bounded by the same depth and concurrency
   limits.
 - Add per-bot and global concurrency limits.
@@ -637,8 +641,9 @@ and run history.
 ### Milestone 4 --- Messaging and bounded delegation
 
 - [x] Add bot-to-bot and team conversations.
-- [x] Trigger recipient sessions on bot-to-bot messages (new session in
-      recipient home) and on explicit user mentions.
+- [x] Trigger recipient sessions on bot-to-bot messages (recipient
+      session resumes across a caller's turn via bot-link pins) and on
+      explicit user mentions.
 - [x] Add task records, assignment, state transitions, and result
       links.
 - [x] Support parallel runs across multiple bots.

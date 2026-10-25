@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { Effect } from "effect";
-import type { BotRepository, ConversationService, RunService } from "@bebots/application";
+import type { BotRepository, RunService } from "@bebots/application";
 import type { ConversationRunCoordinator } from "@bebots/application";
 import type { TaskService } from "@bebots/application";
 import type { Run } from "@bebots/domain";
@@ -10,7 +10,6 @@ import { asBotId } from "@bebots/domain";
 
 export interface McpDeps {
   readonly botRepo: BotRepository;
-  readonly conversationService: ConversationService;
   readonly conversationCoordinator: ConversationRunCoordinator;
   readonly runService?: RunService;
   readonly taskService: TaskService;
@@ -38,7 +37,7 @@ function allowSend(botId: string): boolean {
 }
 
 function buildServer(deps: McpDeps): McpServer {
-  const { botRepo, conversationService, conversationCoordinator, runService, taskService } = deps;
+  const { botRepo, conversationCoordinator, runService, taskService } = deps;
   const server = new McpServer({ name: "bebots", version: "1.0.0" });
 
   server.registerTool(
@@ -54,7 +53,8 @@ function buildServer(deps: McpDeps): McpServer {
   server.registerTool(
     "send_message",
     {
-      description: "Send a message to another bot and wait for its reply. Creates a new direct thread if no conversation_id is given.",
+      description:
+        "Send a message to another bot and wait for its reply. Messages you send to the same bot while working on your current task reuse the thread of your first message to that bot — the bot keeps answering from the same session context. Pass conversation_id to post into a specific thread instead.",
       inputSchema: {
         target_bot_id: z.string().describe("The id of the recipient bot"),
         content: z.string().describe("Message content"),
@@ -74,13 +74,17 @@ function buildServer(deps: McpDeps): McpServer {
         return { content: [{ type: "text", text: "Recipient bot not found or inactive" }], isError: true };
       }
 
-      let conversationId = args.conversation_id;
-      if (!conversationId) {
-        const conv = await Effect.runPromise(
-          conversationService.createConversation({ kind: "direct", participants: [callerId, args.target_bot_id] }),
-        );
-        conversationId = String(conv.id);
-      }
+      // Route the message: an explicit conversation id wins; otherwise the
+      // coordinator resolves (or pins) the direct conversation for this
+      // (caller, target) pair so follow-up messages within the caller's turn
+      // keep reaching the same conversation — and the same session.
+      const conversationId = await Effect.runPromise(
+        conversationCoordinator.resolveBotLinkConversation({
+          callerBotId: callerId,
+          targetBotId: args.target_bot_id,
+          ...(args.conversation_id !== undefined && { conversationId: args.conversation_id }),
+        }),
+      );
 
       const outcome = await Effect.runPromise(
         conversationCoordinator.sendMessage({

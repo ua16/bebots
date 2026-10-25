@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Cause, Effect, Exit, Stream } from "effect";
 import type { Bot, Conversation, ConversationSession, Message, Run } from "@bebots/domain";
 import { asBotId, asConversationId } from "@bebots/domain";
-import { ConversationRunCoordinator } from "./conversation-run-coordinator.js";
+import { BOT_LINK_PIN_TTL_MS, ConversationRunCoordinator } from "./conversation-run-coordinator.js";
 import { ConversationService, ConversationSessionService } from "./conversation-service.js";
 import { NotFoundError } from "./errors.js";
 import { RunService } from "./run-service.js";
@@ -155,9 +155,13 @@ interface TestEnv {
 }
 
 /** `participantBots` controls which participants the fake bot repo knows. */
-function makeEnv(participants: readonly string[], runtime: AgentRuntime): TestEnv {
-  const fixedClock: Clock = { now: () => 1_000 };
-  const ids: IdGenerator = { generate: () => "fixed-id" };
+function makeEnv(
+  participants: readonly string[],
+  runtime: AgentRuntime,
+  options: { ids?: IdGenerator; clock?: Clock; botLedger?: BotRepository } = {},
+): TestEnv {
+  const fixedClock: Clock = options.clock ?? { now: () => 1_000 };
+  const ids: IdGenerator = options.ids ?? { generate: () => "fixed-id" };
   const conversationService = new ConversationService({
     conversationRepo: makeConversationRepo(),
     messageRepo: makeMessageRepo(),
@@ -171,7 +175,7 @@ function makeEnv(participants: readonly string[], runtime: AgentRuntime): TestEn
   });
   const runService = new RunService({
     runRepo: makeRunRepo(),
-    botRepo,
+    botRepo: options.botLedger ?? botRepo,
     workspace,
     runtime,
     clock: fixedClock,
@@ -181,7 +185,8 @@ function makeEnv(participants: readonly string[], runtime: AgentRuntime): TestEn
   const coordinator = new ConversationRunCoordinator({
     conversationService,
     runService,
-    botRepo,
+    botRepo: options.botLedger ?? botRepo,
+    clock: fixedClock,
   });
   return { coordinator, conversationService, sessions };
 }
@@ -333,5 +338,163 @@ describe("duplicate reply runs", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(started.map((r) => String(r.botId))).toEqual(["bot-1"]);
+  });
+});
+
+describe("bot-to-bot send_message continuity (bot-link pins)", () => {
+  function makeNamedBot(id: string, name: string): Bot {
+    return { id: asBotId(id), name, description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 };
+  }
+
+  function makeBotLedger(bots: readonly Bot[]): BotRepository {
+    const byId = new Map(bots.map((b) => [String(b.id), b] as const));
+    return {
+      create: (b) => Effect.succeed(b),
+      findById: (id) => Effect.succeed(byId.get(String(id)) ?? null),
+      findAll: () => Effect.succeed([...byId.values()]),
+      update: (b) => Effect.succeed(b),
+      delete: () => Effect.void,
+    };
+  }
+
+  function makeSeqIds(): IdGenerator {
+    let counter = 0;
+    return { generate: () => `id-${++counter}` };
+  }
+
+  const bot2 = makeNamedBot("bot-2", "Bot Two");
+  const bot3 = makeNamedBot("bot-3", "Bot Three");
+
+  async function pin(env: TestEnv, callerBotId: string, targetBotId: string): Promise<string> {
+    return Effect.runPromise(env.coordinator.resolveBotLinkConversation({ callerBotId, targetBotId }));
+  }
+
+  it("routes a caller's repeated sends to one bot through the same pinned conversation", async () => {
+    const env = makeEnv(["bot-1", "bot-2"], makeRuntime(), {
+      ids: makeSeqIds(),
+      botLedger: makeBotLedger([bot, bot2]),
+    });
+    const first = await pin(env, "bot-1", "bot-2");
+    const second = await pin(env, "bot-1", "bot-2");
+    expect(second).toBe(first);
+
+    // The pin is scoped to the (caller, target) pair: another caller to the
+    // same target gets its own conversation.
+    const otherCaller = await pin(env, "bot-2", "bot-1");
+    expect(otherCaller).not.toBe(first);
+
+    // An explicit conversation id always wins.
+    await Effect.runPromise(
+      env.conversationService.createConversation({ title: "explicit", participants: ["bot-1", "bot-2"] }),
+    );
+    const provided = "id-explicit";
+    const explicit = await Effect.runPromise(
+      env.coordinator.resolveBotLinkConversation({ callerBotId: "bot-1", targetBotId: "bot-2", conversationId: provided }),
+    );
+    expect(explicit).toBe(provided);
+  });
+
+  it("the recipient's conversation session is created once and resumed for follow-up messages", async () => {
+    const started: RunRequest[] = [];
+    const runtime = makeRuntime({
+      startRun: (request: RunRequest) => {
+        started.push(request);
+        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+      },
+    });
+    const env = makeEnv(["bot-1", "bot-2"], runtime, {
+      ids: makeSeqIds(),
+      botLedger: makeBotLedger([bot, bot2]),
+    });
+    const conversationId = await pin(env, "bot-1", "bot-2");
+
+    await Effect.runPromise(
+      env.coordinator.sendMessage({ conversationId, content: "hello", senderType: "bot", senderId: "bot-1" }),
+    );
+    await Effect.runPromise(
+      env.coordinator.sendMessage({ conversationId, content: "follow-up?", senderType: "bot", senderId: "bot-1" }),
+    );
+
+    expect(started).toHaveLength(2);
+    expect(String(started[1]?.prompt)).toBe("follow-up?");
+    // First send had no stored session to resume; the follow-up resumed the
+    // session recorded by the first send — the same recipient session.
+    expect(started[0]?.sessionId).toBeUndefined();
+    expect(started[1]?.sessionId).toBe("sess-1");
+    const sessionList = await Effect.runPromise(env.sessions.listSessions({ conversationId }));
+    expect(sessionList).toHaveLength(1);
+    expect(sessionList[0]?.botId).toBe("bot-2");
+  });
+
+  it("releases the caller's pins when the caller records its own reply, but not other callers' pins", async () => {
+    const env = makeEnv(["bot-1", "bot-2"], makeRuntime(), {
+      ids: makeSeqIds(),
+      botLedger: makeBotLedger([bot, bot2]),
+    });
+    const pinned = await pin(env, "bot-1", "bot-2");
+    const bot2Pin = await pin(env, "bot-2", "bot-1");
+
+    await Effect.runPromise(env.coordinator.recordBotReply(pinned, "bot-1", "the answer for the user"));
+
+    const repinned = await pin(env, "bot-1", "bot-2");
+    expect(repinned).not.toBe(pinned);
+    expect(await pin(env, "bot-2", "bot-1")).toBe(bot2Pin);
+  });
+
+  it("expires bot-link pins after the sliding inactivity window", async () => {
+    let now = 1_000;
+    const env = makeEnv(["bot-1", "bot-2"], makeRuntime(), {
+      ids: makeSeqIds(),
+      clock: { now: () => now },
+      botLedger: makeBotLedger([bot, bot2]),
+    });
+    const pinned = await pin(env, "bot-1", "bot-2");
+    now += 5 * 60 * 1000; // still within the window, sliding
+    expect(await pin(env, "bot-1", "bot-2")).toBe(pinned);
+    now += BOT_LINK_PIN_TTL_MS + 1;
+    expect(await pin(env, "bot-1", "bot-2")).not.toBe(pinned);
+  });
+
+  it("does not re-trigger the pinned caller when the target's reply lands in the link conversation", async () => {
+    const started: RunRequest[] = [];
+    const runtime = makeRuntime({
+      startRun: (request: RunRequest) => {
+        started.push(request);
+        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+      },
+    });
+    const env = makeEnv(["bot-1", "bot-2"], runtime, {
+      ids: makeSeqIds(),
+      botLedger: makeBotLedger([bot, bot2]),
+    });
+    const conversationId = await pin(env, "bot-1", "bot-2");
+
+    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-2", "worked on it"));
+
+    // bot-1 (the pinned caller) receives the reply synchronously via
+    // send_message; propagating it would only re-trigger bot-1 redundantly.
+    expect(started).toHaveLength(0);
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(1);
+    expect(thread[0]?.senderId).toBe("bot-2");
+  });
+
+  it("still relays @mentions to other bots inside a bot-link conversation", async () => {
+    const started: RunRequest[] = [];
+    const runtime = makeRuntime({
+      startRun: (request: RunRequest) => {
+        started.push(request);
+        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+      },
+    });
+    const env = makeEnv(["bot-1", "bot-2"], runtime, {
+      ids: makeSeqIds(),
+      botLedger: makeBotLedger([bot, bot2, bot3]),
+    });
+    const conversationId = await pin(env, "bot-1", "bot-2");
+
+    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-2", "asking @bot-3"));
+
+    expect(started.map((r) => String(r.botId))).toEqual(["bot-3"]);
   });
 });

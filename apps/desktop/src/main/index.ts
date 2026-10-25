@@ -231,7 +231,6 @@ async function setupBotService(): Promise<void> {
   // Remote MCP server (Approach B): in-process, exposed over HTTP at /mcp.
   const mcp = await createMcpServer({
     botRepo: repo,
-    conversationService,
     conversationCoordinator,
     runService,
     taskService,
@@ -258,7 +257,7 @@ async function setupBotService(): Promise<void> {
       "<!-- bebots-protocol -->",
       `You are bot ${botId}. You can communicate with other bots using the bebots MCP tools:`,
       "- list_bots: see all bots",
-      "- send_message(target_bot_id, content): send a message to another bot; returns the bot's reply result (creates a new thread)",
+      "- send_message(target_bot_id, content): send a message to another bot; returns the bot's reply result. Messages you send to the same bot while working on your task are delivered to the bot's same thread and session, so you can have a multi-turn exchange; the linkage ends once you reply to the user",
       "- create_task(assignee, description): delegate work to another bot",
       "Other bots:",
       roster || "(none)",

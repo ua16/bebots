@@ -5,7 +5,7 @@ import { asBotId } from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
 import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
-import type { BotRepository } from "./repositories.js";
+import type { BotRepository, Clock } from "./repositories.js";
 import type { RunService } from "./run-service.js";
 
 /**
@@ -33,6 +33,8 @@ export interface ConversationRunCoordinatorDeps {
   readonly conversationService: ConversationService;
   readonly runService: RunService;
   readonly botRepo: BotRepository;
+  /** Optional injected clock (bot-link pin TTLs); defaults to wall time. */
+  readonly clock?: Clock;
 }
 
 /**
@@ -45,17 +47,144 @@ export interface ConversationRunCoordinatorDeps {
  */
 export const MAX_MESSAGE_HOP_DEPTH = 3;
 
+/**
+ * Sliding inactivity window for bot-to-bot link pins. A pin normally lives
+ * until the caller bot records a reply of its own (its run answered the
+ * user); the expiry only catches callers whose turn never produced a reply
+ * (failed/cancelled run, crashed process).
+ */
+export const BOT_LINK_PIN_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * One bot-to-bot link pin: the caller bot's messages to the target bot are
+ * routed into `conversationId` until the pin is released or expires, so the
+ * target keeps answering from the same resumable session.
+ */
+interface BotLinkPin {
+  readonly conversationId: string;
+  pinnedAt: number;
+}
+
 export class ConversationRunCoordinator implements ConversationReplyRecorder {
   private readonly conversationService: ConversationService;
   private readonly runService: RunService;
   private readonly botRepo: BotRepository;
+  private readonly clock: Clock;
   private readonly hopCounts = new Map<string, number>();
+
+  /** Pins: caller bot id → target bot id → pinned (caller, target) conversation. */
+  private readonly botLinks = new Map<string, Map<string, BotLinkPin>>();
+  /** Conversation ids created through `resolveBotLinkConversation`. */
+  private readonly botLinkConversations = new Set<string>();
 
   constructor(deps: ConversationRunCoordinatorDeps) {
     this.conversationService = deps.conversationService;
     this.runService = deps.runService;
     this.botRepo = deps.botRepo;
+    this.clock = deps.clock ?? { now: () => Date.now() };
   }
+
+  // --- Bot-to-bot link pins (send_message continuity) ---
+
+  /**
+   * Resolve the conversation a bot-to-bot `send_message` posts into (called
+   * by the MCP layer). An explicit conversation id always wins. Otherwise, a
+   * (caller, target) pin that is still active and backed by an existing
+   * conversation is reused (and its inactivity window slides); with no pin,
+   * a fresh direct conversation is created for the pair and pinned, so every
+   * further message the caller sends to this target during its current turn
+   * keeps reaching the same conversation — and therefore the same resumable
+   * recipient session.
+   */
+  resolveBotLinkConversation(input: {
+    readonly callerBotId: string;
+    readonly targetBotId: string;
+    readonly conversationId?: string;
+  }): Effect.Effect<string, RepositoryError | ServiceError> {
+    const conversationService = this.conversationService;
+    const self = this;
+    return Effect.gen(function* () {
+      if (input.conversationId && input.conversationId.trim().length > 0) {
+        return input.conversationId;
+      }
+      self.pruneExpiredBotLinks();
+      const pin = self.botLinks.get(input.callerBotId)?.get(input.targetBotId);
+      if (pin) {
+        const conversation = yield* conversationService.getConversation(pin.conversationId);
+        if (conversation) {
+          pin.pinnedAt = self.clock.now();
+          return pin.conversationId;
+        }
+        // The conversation vanished (e.g. deleted); drop the stale pin.
+        self.removeBotLink(input.callerBotId, input.targetBotId);
+      }
+      const conversation = yield* conversationService.createConversation({
+        kind: "direct",
+        participants: [input.callerBotId, input.targetBotId],
+      });
+      const conversationId = String(conversation.id);
+      const targets = self.botLinks.get(input.callerBotId) ?? new Map<string, BotLinkPin>();
+      targets.set(input.targetBotId, { conversationId, pinnedAt: self.clock.now() });
+      self.botLinks.set(input.callerBotId, targets);
+      self.botLinkConversations.add(conversationId);
+      return conversationId;
+    }) as Effect.Effect<string, RepositoryError | ServiceError>;
+  }
+
+  /**
+   * Release caller bot's link pins: the caller recorded a reply of its own,
+   * which is how a bot "responds back to the user" — its turn is over and
+   * later messages to previous targets start fresh conversations/sessions.
+   */
+  private releaseBotLinks(callerBotId: string): void {
+    const targets = this.botLinks.get(callerBotId);
+    if (!targets) return;
+    for (const targetId of [...targets.keys()]) {
+      const pin = targets.get(targetId);
+      if (pin) this.botLinkConversations.delete(pin.conversationId);
+      targets.delete(targetId);
+    }
+    this.botLinks.delete(callerBotId);
+  }
+
+  private removeBotLink(callerBotId: string, targetBotId: string): void {
+    const targets = this.botLinks.get(callerBotId);
+    if (!targets) return;
+    const pin = targets.get(targetBotId);
+    if (pin) this.botLinkConversations.delete(pin.conversationId);
+    targets.delete(targetBotId);
+    if (targets.size === 0) this.botLinks.delete(callerBotId);
+  }
+
+  /** Safety net: drop pins whose sliding inactivity window has elapsed. */
+  private pruneExpiredBotLinks(): void {
+    const now = this.clock.now();
+    for (const [callerId, targets] of this.botLinks) {
+      for (const [targetId, pin] of [...targets]) {
+        if (now - pin.pinnedAt > BOT_LINK_PIN_TTL_MS) {
+          this.botLinkConversations.delete(pin.conversationId);
+          targets.delete(targetId);
+        }
+      }
+      if (targets.size === 0) this.botLinks.delete(callerId);
+    }
+  }
+
+  /**
+   * True when `senderBotId` was contacted by `callerBotId` through a pinned
+   * bot-link conversation: the caller already receives the target's replies
+   * synchronously (send_message awaits the run), so propagating the reply
+   * back would only re-trigger the caller redundantly.
+   */
+  private suppressBotLinkCaller(
+    callerBotId: string,
+    senderBotId: string,
+    conversationId: string,
+  ): boolean {
+    const pin = this.botLinks.get(callerBotId)?.get(senderBotId);
+    return pin !== undefined && pin.conversationId === conversationId;
+  }
+
 
   /**
    * Persist the message and, for human messages, trigger the participant
@@ -104,7 +233,12 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       // Loop prevention: bot-triggered messages only propagate up to
       // MAX_MESSAGE_HOP_DEPTH hops.
       let currentHops = self.hopCounts.get(String(conversation.id)) ?? 0;
-      if (senderType === "human") currentHops = 0;
+      if (senderType === "human") {
+        currentHops = 0;
+        // A human message means bots are being prompted again; this is also
+        // the cheapest place to sweep expired bot-link pins as a safety net.
+        self.pruneExpiredBotLinks();
+      }
       const canPropagate =
         senderType !== "system" && currentHops < MAX_MESSAGE_HOP_DEPTH;
 
@@ -133,6 +267,15 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
             bot = all.find((b) => b.name === token && b.status === "active") ?? null;
           }
           if (bot && bot.status === "active" && String(bot.id) !== senderId) {
+            // In a bot-link conversation the pinned caller receives the
+            // target's replies synchronously via send_message; do not
+            // re-trigger it.
+            if (
+              senderId &&
+              self.suppressBotLinkCaller(String(bot.id), senderId, String(conversation.id))
+            ) {
+              continue;
+            }
             recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
           }
         }
@@ -160,6 +303,9 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
           if (raw.length === 0) continue;
           const bot = yield* botRepo.findById(asBotId(raw)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
           if (bot && bot.status === "active" && String(bot.id) !== senderId) {
+            if (self.suppressBotLinkCaller(String(bot.id), senderId, String(conversation.id))) {
+              continue;
+            }
             recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
           }
         }
@@ -180,7 +326,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
             prompt: message.content,
             conversationId: conversation.id,
             triggerType: "message",
-            newSession: senderType === "bot",
+            // Bot-to-bot conversation runs resume the recipient's
+            // per-conversation session like every other conversation run
+            // (send_message continuity); the session store already scopes
+            // sessions per (conversation, bot).
           })
           .pipe(
             Effect.catchCause((cause) => {
@@ -220,6 +369,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         senderType: "bot",
         senderId: botId,
       });
+      // A bot recording its own reply is how it "responds back to the user";
+      // its turn is over, so release the bot-link pins it created during this
+      // turn (later sends to those targets start fresh again).
+      self.releaseBotLinks(botId);
       // Propagation failures are ignored: the reply itself is already stored,
       // and delivery must not depend on the relay hop.
       yield* self
