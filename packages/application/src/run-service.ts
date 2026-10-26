@@ -23,7 +23,13 @@ import type {
   IdGenerator,
   RunRepository,
 } from "./repositories.js";
-import { NotFoundError, RepositoryError, ServiceError, ValidationError, WorkspaceError } from "./errors.js";
+import {
+  NotFoundError,
+  RepositoryError,
+  ServiceError,
+  ValidationError,
+  WorkspaceError,
+} from "./errors.js";
 import type { AppSettingsService } from "./app-settings.js";
 
 function describeError(error: unknown): string {
@@ -52,6 +58,8 @@ export interface RunServiceDeps {
   readonly conversationMessages?: ConversationReplyRecorder;
   /** Task result recording; runs linked to a task update its status. */
   readonly taskResults?: TaskResultRecorder;
+  /** Schedule occurrence recording; runs triggered by a schedule update it. */
+  readonly scheduleResults?: ScheduleResultRecorder;
   /** App settings; supplies the default model when a bot has no override. */
   readonly settings?: AppSettingsService;
   /** Global concurrency limits. */
@@ -62,6 +70,15 @@ export interface RunServiceDeps {
 export interface TaskResultRecorder {
   readonly recordTaskResult: (
     taskId: string,
+    runId: string,
+    status: "succeeded" | "failed" | "cancelled" | "timed_out",
+    summary?: string,
+  ) => Effect.Effect<void, unknown>;
+}
+
+/** Receiver of terminal results for schedule-triggered runs (PLAN §9). */
+export interface ScheduleResultRecorder {
+  readonly recordRunResult: (
     runId: string,
     status: "succeeded" | "failed" | "cancelled" | "timed_out",
     summary?: string,
@@ -90,6 +107,7 @@ export class RunService {
   private readonly conversationSessions: ConversationSessionOps | undefined;
   private readonly conversationMessages: ConversationReplyRecorder | undefined;
   private taskResults: TaskResultRecorder | undefined;
+  private scheduleResults: ScheduleResultRecorder | undefined;
   private readonly settings: AppSettingsService | undefined;
   private readonly maxConcurrentRuns: number;
   private readonly maxConcurrentRunsPerBot: number;
@@ -106,6 +124,7 @@ export class RunService {
     this.conversationSessions = deps.conversationSessions;
     this.conversationMessages = deps.conversationMessages;
     this.taskResults = deps.taskResults;
+    this.scheduleResults = deps.scheduleResults;
     this.settings = deps.settings;
     this.maxConcurrentRuns = deps.maxConcurrentRuns ?? 10;
     this.maxConcurrentRunsPerBot = deps.maxConcurrentRunsPerBot ?? 3;
@@ -311,6 +330,27 @@ export class RunService {
             );
         }
 
+        // Schedule occurrence link: scheduled runs resolve their persisted
+        // occurrence so the UI/API can show schedule history (PLAN §9).
+        const scheduleResults = self.scheduleResults;
+        if (scheduleResults && finalRun.triggerType === "schedule") {
+          yield* scheduleResults
+            .recordRunResult(
+              String(finalRun.id),
+              terminalStatus === "succeeded" ? "succeeded" : "failed",
+              finalRun.summary,
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError(
+                  "Recording schedule result failed",
+                  runId,
+                  describeError(Cause.squash(cause)),
+                ),
+              ),
+            );
+        }
+
         // PLAN §12 M3: a succeeded conversation run posts its answer into the
         // thread as a bot reply — whoever started it. Recording must not be
         // able to take finalization down; failures are logged.
@@ -400,6 +440,10 @@ export class RunService {
           .recordTaskResult(String(run.taskId), String(run.id), "cancelled")
           .pipe(Effect.ignore);
       }
+      const scheduleResults = self.scheduleResults;
+      if (scheduleResults && run.triggerType === "schedule") {
+        yield* scheduleResults.recordRunResult(String(run.id), "cancelled").pipe(Effect.ignore);
+      }
       return updated;
     });
   }
@@ -424,12 +468,16 @@ export class RunService {
     this.taskResults = tr;
   }
 
+  setScheduleResults(sr: ScheduleResultRecorder | undefined): void {
+    this.scheduleResults = sr;
+  }
+
   cancelAllRuns(): Effect.Effect<void, RuntimeError> {
     const self = this;
     return Effect.gen(function* () {
-      const running = yield* self.runRepo.findAll({ status: "running" }).pipe(
-        Effect.catchCause(() => Effect.succeed([] as readonly Run[])),
-      );
+      const running = yield* self.runRepo
+        .findAll({ status: "running" })
+        .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
       for (const run of running) {
         yield* self.cancelRun(run.id).pipe(Effect.ignore);
       }

@@ -47,6 +47,46 @@ interface ApiModelRef {
   readonly id: string;
 }
 
+interface ApiSchedule {
+  readonly id: string;
+  readonly botId: string;
+  readonly prompt: string;
+  readonly trigger:
+    | { kind: "interval"; everyMs: number }
+    | { kind: "once"; at: number }
+    | { kind: "cron"; expression: string; timezone: string };
+  readonly enabled: boolean;
+  /** The schedule's dedicated thread with the user (provisioned on first fire). */
+  readonly conversationId?: string | null;
+  readonly nextRunAt: number | null;
+  readonly lastRunAt: number | null;
+  readonly createdAt: number;
+}
+
+interface ApiScheduleOccurrence {
+  readonly id: string;
+  readonly scheduleId: string;
+  readonly scheduledFor: number;
+  readonly status: string;
+  readonly runId: string | null;
+  readonly attempts: number;
+  readonly error: string | null;
+}
+
+/** Short human description of a schedule trigger, e.g. "every 5m" or cron. */
+function describeTrigger(trigger: ApiSchedule["trigger"]): string {
+  if (trigger.kind === "interval") {
+    const minutes = Math.round(trigger.everyMs / 60_000);
+    return minutes % 60 === 0 && minutes >= 60
+      ? `every ${Math.round(minutes / 60)}h`
+      : `every ${minutes}m`;
+  }
+  if (trigger.kind === "once") {
+    return new Date(trigger.at).toLocaleString();
+  }
+  return `cron ${trigger.expression} (${trigger.timezone})`;
+}
+
 interface ApiModel {
   readonly providerID: string;
   readonly id: string;
@@ -152,6 +192,15 @@ export function App() {
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   // Run history for the selected bot
   const [runHistory, setRunHistory] = useState<readonly ApiRun[]>([]);
+  // Schedules for the selected bot (durable scheduled runs)
+  const [schedules, setSchedules] = useState<readonly ApiSchedule[]>([]);
+  // Expanded schedule: its recent occurrence history
+  const [scheduleHistory, setScheduleHistory] = useState<{
+    id: string;
+    occurrences: readonly ApiScheduleOccurrence[];
+  } | null>(null);
+  const [schedulePrompt, setSchedulePrompt] = useState("");
+  const [scheduleMinutes, setScheduleMinutes] = useState("60");
   // Chat surface state: toggled bots panel, reply-run indicator, notices.
   const [botsPanelOpen, setBotsPanelOpen] = useState(true);
   const [pendingReply, setPendingReply] = useState(false);
@@ -213,6 +262,15 @@ export function App() {
 
   useEffect(() => {
     void refreshConversations();
+  }, [refreshConversations]);
+
+  // Conversations can also be created by bots via MCP (send_message races and
+  // scheduled runs route output into threads the user never opened); poll so
+  // new threads appear without user action.
+  useEffect(() => {
+    if (!endpoint) return;
+    const interval = setInterval(() => void refreshConversations(), 60_000);
+    return () => clearInterval(interval);
   }, [refreshConversations]);
 
   const refreshMessages = async (conversationId: string) => {
@@ -346,13 +404,76 @@ export function App() {
 
   const selected = bots.find((b) => b.id === selectedId) ?? null;
 
+  const refreshSchedules = useCallback(async () => {
+    if (!endpoint || !selectedId) {
+      setSchedules([]);
+      return;
+    }
+    try {
+      const all = await apiFetch<readonly ApiSchedule[]>(
+        endpoint,
+        `/api/v1/schedules?botId=${encodeURIComponent(selectedId)}`,
+      );
+      setSchedules([...all].sort((a, b) => b.createdAt - a.createdAt));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [endpoint, selectedId]);
+
+  // Re-fetch the expanded schedule's occurrence history so statuses
+  // (pending → enqueued → succeeded/failed) update after a trigger fires
+  // without the user having to toggle History again.
+  const refreshScheduleHistory = useCallback(async () => {
+    const id = scheduleHistory?.id;
+    if (!endpoint || !id) return;
+    try {
+      const occurrences = await apiFetch<readonly ApiScheduleOccurrence[]>(
+        endpoint,
+        `/api/v1/schedules/${encodeURIComponent(id)}/occurrences?limit=10`,
+      );
+      setScheduleHistory({ id, occurrences });
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [endpoint, scheduleHistory?.id]);
+
   useEffect(() => {
     if (selected) {
       void refreshRunHistory();
+      void refreshSchedules();
     } else {
       setRunHistory([]);
+      setSchedules([]);
+      setScheduleHistory(null);
     }
-  }, [selected, refreshRunHistory]);
+  }, [selected, refreshRunHistory, refreshSchedules]);
+
+  // Schedules and runs can also be created/advanced by bots via MCP, which
+  // the renderer can't see; poll the schedule list, run history, and any
+  // expanded occurrence history while a bot is selected.
+  useEffect(() => {
+    if (!selected) return;
+    const interval = setInterval(() => {
+      void refreshSchedules();
+      void refreshRunHistory();
+      void refreshScheduleHistory();
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [selected, refreshSchedules, refreshRunHistory, refreshScheduleHistory]);
+
+  // The open thread can receive messages from outside the composer — a
+  // scheduled-run reply lands in its own thread whenever the scheduler fires.
+  // Refresh on the same 15s cadence so it appears without user action.
+  useEffect(() => {
+    if (!activeConversationId) return;
+    const interval = setInterval(() => {
+      if (activeIdRef.current === activeConversationId) {
+        void refreshMessages(activeConversationId);
+      }
+    }, 15_000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversationId]);
 
   useEffect(() => {
     if (selected) {
@@ -383,10 +504,14 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      const s = await apiFetch<{ defaultModel?: ApiModelRef | null }>(endpoint, "/api/v1/settings", {
-        method: "PUT",
-        body: { defaultModel: selectionToApiModel(defaultModelSelection) },
-      });
+      const s = await apiFetch<{ defaultModel?: ApiModelRef | null }>(
+        endpoint,
+        "/api/v1/settings",
+        {
+          method: "PUT",
+          body: { defaultModel: selectionToApiModel(defaultModelSelection) },
+        },
+      );
       setDefaultModelSelection(appDefaultToSelection(s.defaultModel));
     } catch (e) {
       setError(String(e));
@@ -451,6 +576,77 @@ export function App() {
     } catch (e) {
       setError(String(e));
       setRunStatus("failed");
+    }
+  };
+
+  const handleCreateSchedule = async () => {
+    if (!endpoint || !selectedId) return;
+    setError(null);
+    const minutes = Number(scheduleMinutes);
+    if (!Number.isFinite(minutes) || minutes < 1) {
+      setError("Interval must be at least 1 minute");
+      return;
+    }
+    try {
+      await apiFetch<ApiSchedule>(endpoint, "/api/v1/schedules", {
+        method: "POST",
+        body: {
+          botId: selectedId,
+          prompt: schedulePrompt,
+          trigger: { kind: "interval", everyMs: Math.round(minutes * 60_000) },
+        },
+      });
+      setSchedulePrompt("");
+      await refreshSchedules();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleToggleSchedule = async (schedule: ApiSchedule) => {
+    if (!endpoint) return;
+    setError(null);
+    try {
+      await apiFetch<ApiSchedule>(
+        endpoint,
+        `/api/v1/schedules/${encodeURIComponent(schedule.id)}`,
+        { method: "PATCH", body: { enabled: !schedule.enabled } },
+      );
+      setScheduleHistory(null);
+      await refreshSchedules();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleDeleteSchedule = async (schedule: ApiSchedule) => {
+    if (!endpoint) return;
+    setError(null);
+    try {
+      await apiFetch(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, {
+        method: "DELETE",
+      });
+      setScheduleHistory(null);
+      await refreshSchedules();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleShowScheduleHistory = async (schedule: ApiSchedule) => {
+    if (!endpoint) return;
+    if (scheduleHistory?.id === schedule.id) {
+      setScheduleHistory(null);
+      return;
+    }
+    try {
+      const occurrences = await apiFetch<readonly ApiScheduleOccurrence[]>(
+        endpoint,
+        `/api/v1/schedules/${encodeURIComponent(schedule.id)}/occurrences?limit=10`,
+      );
+      setScheduleHistory({ id: schedule.id, occurrences });
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -609,23 +805,35 @@ export function App() {
                 {participantsLabel.length > 0 && <span className="muted">{participantsLabel}</span>}
               </header>
               <div className="chat-thread">
-                {messages.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`message ${m.senderType === "human" ? "message-human" : "message-bot"}`}
-                  >
-                    <span className="message-sender">
-                      {m.senderType === "human" ? "You" : botName(m.senderId)}
-                    </span>
-                    <span className="message-content">{renderMentionContent(m.content)}</span>
-                    <time className="message-time">
-                      {new Date(m.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </time>
-                  </div>
-                ))}
+                {messages.map((m) =>
+                  m.senderType === "system" ? (
+                    <div key={m.id} className="message message-system">
+                      <span className="message-content">{m.content}</span>
+                      <time className="message-time">
+                        {new Date(m.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                  ) : (
+                    <div
+                      key={m.id}
+                      className={`message ${m.senderType === "human" ? "message-human" : "message-bot"}`}
+                    >
+                      <span className="message-sender">
+                        {m.senderType === "human" ? "You" : botName(m.senderId)}
+                      </span>
+                      <span className="message-content">{renderMentionContent(m.content)}</span>
+                      <time className="message-time">
+                        {new Date(m.createdAt).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                  ),
+                )}
                 {pendingReply && <div className="typing">{typingLabel}</div>}
                 {threadNotice !== null && <div className="thread-notice">{threadNotice}</div>}
                 <div ref={threadEndRef} />
@@ -699,8 +907,8 @@ export function App() {
                       }
                       if (e.key === "ArrowUp") {
                         e.preventDefault();
-                        setMentionIndex((i) =>
-                          (i - 1 + mentionSuggestions.length) % mentionSuggestions.length,
+                        setMentionIndex(
+                          (i) => (i - 1 + mentionSuggestions.length) % mentionSuggestions.length,
                         );
                         return;
                       }
@@ -837,6 +1045,95 @@ export function App() {
                         </ul>
                       </div>
                     )}
+                    <div className="schedule-panel">
+                      <h3>Schedules</h3>
+                      <ul className="schedule-list">
+                        {schedules.length === 0 && <li className="muted">No scheduled runs</li>}
+                        {schedules.map((schedule) => (
+                          <li key={schedule.id} className={schedule.enabled ? "" : "muted"}>
+                            <div className="schedule-row">
+                              <span className="schedule-trigger">
+                                {describeTrigger(schedule.trigger)}
+                              </span>
+                              <span className="schedule-prompt">
+                                {schedule.prompt.slice(0, 60)}
+                              </span>
+                            </div>
+                            <div className="schedule-meta">
+                              {schedule.enabled
+                                ? schedule.nextRunAt
+                                  ? `next: ${new Date(schedule.nextRunAt).toLocaleString()}`
+                                  : "no upcoming fire"
+                                : "paused"}
+                            </div>
+                            <div className="schedule-actions">
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleSchedule(schedule)}
+                              >
+                                {schedule.enabled ? "Pause" : "Enable"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleShowScheduleHistory(schedule)}
+                              >
+                                History
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteSchedule(schedule)}
+                              >
+                                Delete
+                              </button>
+                              {schedule.conversationId &&
+                                conversations.some((c) => c.id === schedule.conversationId) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => selectConversation(schedule.conversationId!)}
+                                  >
+                                    Open thread
+                                  </button>
+                                )}
+                            </div>
+                            {scheduleHistory?.id === schedule.id && (
+                              <ul className="schedule-occurrences">
+                                {scheduleHistory.occurrences.length === 0 && (
+                                  <li className="muted">No occurrences yet</li>
+                                )}
+                                {scheduleHistory.occurrences.map((occ) => (
+                                  <li key={occ.id}>
+                                    <code>{occ.status}</code>{" "}
+                                    {new Date(occ.scheduledFor).toLocaleString()}
+                                    {occ.error ? ` — ${occ.error.slice(0, 80)}` : ""}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="schedule-new">
+                        <label>
+                          Schedule prompt
+                          <input
+                            value={schedulePrompt}
+                            placeholder="Prompt to run on schedule"
+                            onChange={(e) => setSchedulePrompt(e.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Every (minutes)
+                          <input
+                            value={scheduleMinutes}
+                            inputMode="numeric"
+                            onChange={(e) => setScheduleMinutes(e.target.value)}
+                          />
+                        </label>
+                        <button type="button" onClick={() => void handleCreateSchedule()}>
+                          Schedule run
+                        </button>
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <button type="button" onClick={handleCreate}>

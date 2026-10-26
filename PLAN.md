@@ -658,12 +658,19 @@ recipient can complete it, and the task/result is visible and auditable.
 
 ### Milestone 5 --- Durable scheduling
 
-- [ ] Add schedule CRUD and timezone handling.
-- [ ] Persist schedule occurrences and queued runs.
-- [ ] Implement idempotent enqueueing, retry policy, and missed-run
+- [x] Add schedule CRUD and timezone handling.
+- [x] Persist schedule occurrences and queued runs.
+- [x] Implement idempotent enqueueing, retry policy, and missed-run
       behavior.
-- [ ] Recover safely from app restart and interrupted executions.
-- [ ] Add schedule history and enable/disable controls.
+- [x] Recover safely from app restart and interrupted executions.
+- [x] Add schedule history and enable/disable controls.
+- [x] Let bots schedule bot runs through the MCP `schedule_run` tool
+      (interval / one-shot / cron, optionally routed into a resumable
+      conversation), with `list_schedules` / `cancel_schedule`.
+- [x] Treat a fired schedule as a conversation between the bot and the
+      user: each schedule gets its own thread on first fire, the trigger is
+      marked in the thread, and the run's result is posted there as the
+      bot's reply.
 
 **Done when:** a scheduled bot run fires once per occurrence, survives
 application restarts, and reports success or failure in the UI.

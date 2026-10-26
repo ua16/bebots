@@ -216,6 +216,52 @@ const MIGRATIONS: readonly Migration[] = [
         ON conversation_sessions (conversation_id, bot_id);
     `,
   },
+  {
+    version: 16,
+    name: "create_schedules",
+    sql: `
+      CREATE TABLE IF NOT EXISTS schedules (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        conversation_id TEXT,
+        created_by TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        anchor_at INTEGER NOT NULL,
+        next_run_at INTEGER,
+        last_run_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_schedules_due
+        ON schedules (enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS idx_schedules_bot
+        ON schedules (bot_id);
+      CREATE INDEX IF NOT EXISTS idx_schedules_created_by
+        ON schedules (created_by);
+
+      CREATE TABLE IF NOT EXISTS schedule_occurrences (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        scheduled_for INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        run_id TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      -- Idempotent enqueueing: one occurrence per (schedule, scheduled time).
+      -- Conflicting inserts return the existing row untouched.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_occurrences_slot
+        ON schedule_occurrences (schedule_id, scheduled_for);
+      CREATE INDEX IF NOT EXISTS idx_schedule_occurrences_status
+        ON schedule_occurrences (status);
+      CREATE INDEX IF NOT EXISTS idx_schedule_occurrences_run
+        ON schedule_occurrences (run_id);
+    `,
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {

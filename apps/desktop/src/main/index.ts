@@ -13,6 +13,7 @@ import {
   createSqliteConversationSessionRepository,
   createSqliteFileIndexRepository,
   createSqliteTaskRepository,
+  createSqliteScheduleRepository,
   createSqliteActivityRepository,
   createSqliteSettingsRepository,
 } from "@bebots/persistence";
@@ -24,11 +25,27 @@ import {
   ConversationSessionService,
   ConversationRunCoordinator,
   TaskService,
+  ScheduleService,
   ActivityService,
 } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
-import type { BotId, ModelRef, RunStatus, TaskStatus } from "@bebots/domain";
-import { asBotId, asRunId, asConversationId, asTaskId, validateModelRef } from "@bebots/domain";
+import type {
+  BotId,
+  ModelRef,
+  RunStatus,
+  TaskStatus,
+  ScheduleId,
+  ScheduleTrigger,
+} from "@bebots/domain";
+import {
+  asBotId,
+  asRunId,
+  asConversationId,
+  asTaskId,
+  asScheduleId,
+  validateModelRef,
+  validateScheduleTrigger,
+} from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
 import { createMcpServer } from "./mcp";
@@ -47,6 +64,7 @@ let _httpServer: ReturnType<typeof createServer> | null = null;
 let runtimeInstance: { close(): void } | null = null;
 let indexerInstance: { close(): void } | null = null;
 let sessionSweepInterval: ReturnType<typeof setInterval> | null = null;
+let scheduleTickInterval: ReturnType<typeof setInterval> | null = null;
 let apiEndpoint: { url: string; token: string } | null = null;
 let apiPort: number | null = null;
 let mcpHandle: { handleRequest: (req: Request) => Promise<Response> } | null = null;
@@ -102,13 +120,19 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
   res.end(JSON.stringify(body));
 }
 
+/** Scheduler tick cadence; overridable via `BEBOTS_SCHEDULE_TICK_MS` (tests). */
+function scheduleTickMs(): number {
+  const raw = Number(process.env.BEBOTS_SCHEDULE_TICK_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
+
 /**
  * Validate an HTTP-body model field (`{ providerID, id } | null`) against the
  * shared domain rules. `undefined` keeps the field untouched; `null` clears.
  */
-function normalizeModelInput(value: unknown):
-  | { readonly model?: ModelRef | null }
-  | { readonly error: string } {
+function normalizeModelInput(
+  value: unknown,
+): { readonly model?: ModelRef | null } | { readonly error: string } {
   const validated = validateModelRef(value);
   if (validated.valid) {
     // `value` is not undefined here, so the normalized value is a ref or null.
@@ -139,6 +163,21 @@ async function setupBotService(): Promise<void> {
         ...r,
         status: "failed",
         error: "Application restarted during run",
+        endedAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+  // Runs persisted as queued but never started (crash between enqueue and
+  // launch) get the same reconciliation; their schedule occurrences then
+  // resolve through the scheduler's stale-occurrence recovery.
+  const staleQueued = await Effect.runPromise(runRepo.findAll({ status: "queued" }));
+  for (const r of staleQueued) {
+    await Effect.runPromise(
+      runRepo.update({
+        ...r,
+        status: "failed",
+        error: "Application restarted before the run started",
         endedAt: Date.now(),
         updatedAt: Date.now(),
       }),
@@ -187,6 +226,10 @@ async function setupBotService(): Promise<void> {
     process.argv.includes("--show-mcp-logs") ||
     process.env.SHOW_MCP_LOGS === "1" ||
     process.env.SHOW_MCP_LOGS === "true";
+  const showSchedulingLogs =
+    process.argv.includes("--show-scheduling-logs") ||
+    process.env.SHOW_SCHEDULING_LOGS === "1" ||
+    process.env.SHOW_SCHEDULING_LOGS === "true";
   const runtime = new OpenCodeRuntime({ extraLogs });
   runtimeInstance = runtime;
   // Run finalization posts completed conversation runs into the thread as bot
@@ -228,12 +271,33 @@ async function setupBotService(): Promise<void> {
   });
   runService.setTaskResults(taskService);
 
+  // Durable schedules (PLAN §9): the scheduler owns due-occurrence recording
+  // and durable run enqueueing; runs carry trigger type "schedule" and are
+  // attributed back to their occurrence via the run-result hook.
+  const scheduleRepo = createSqliteScheduleRepository(db);
+  const scheduleService = new ScheduleService({
+    scheduleRepo,
+    botRepo: repo,
+    runService,
+    // A scheduled run is a conversation between the bot and the user:
+    // schedules without an explicit conversation get their own dedicated
+    // thread with the human; the bot's result is posted there as a reply.
+    threads: conversationService,
+    activity: activityRepo,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+    // Debug logging for schedule creation and scheduler runs (--show-scheduling-logs).
+    showSchedulingLogs,
+  });
+  runService.setScheduleResults(scheduleService);
+
   // Remote MCP server (Approach B): in-process, exposed over HTTP at /mcp.
   const mcp = await createMcpServer({
     botRepo: repo,
     conversationCoordinator,
     runService,
     taskService,
+    scheduleService,
   });
   mcpHandle = mcp;
   const activityService = new ActivityService({
@@ -259,6 +323,7 @@ async function setupBotService(): Promise<void> {
       "- list_bots: see all bots",
       "- send_message(target_bot_id, content): send a message to another bot; returns the bot's reply result. Messages you send to the same bot while working on your task are delivered to the bot's same thread and session, so you can have a multi-turn exchange; the linkage ends once you reply to the user",
       "- create_task(assignee, description): delegate work to another bot",
+      "- schedule_run(prompt, every_minutes | at | cron, bot_id?, conversation_id?): schedule a bot run to fire later (while the app is running); the prompt is passed to a session at the trigger time. Each schedule gets its own thread with the user — when it fires, the run happens in that conversation and your result is posted there as your reply (the user can respond in the thread); pass conversation_id to post into an existing thread instead. Use list_schedules/cancel_schedule(schedule_id) to manage your schedules",
       "Other bots:",
       roster || "(none)",
       "You may also include @botId in a reply to route a message.",
@@ -297,9 +362,15 @@ async function setupBotService(): Promise<void> {
     // Strip any previous protocol block (including the corrupted variant
     // written by the pre-fix join("\\n"), which embedded literal "\n" text).
     persona = persona.replace(/\n\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/, "");
-    persona = persona.replace(/\\n\\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/, "");
+    persona = persona.replace(
+      /\\n\\n<!-- bebots-protocol -->[\s\S]*?<!-- \/bebots-protocol -->/,
+      "",
+    );
     const bots = await Effect.runPromise(service.listBots(false));
-    const block = protocolBlock(botId, bots.map((b) => ({ id: String(b.id), name: b.name, status: b.status })));
+    const block = protocolBlock(
+      botId,
+      bots.map((b) => ({ id: String(b.id), name: b.name, status: b.status })),
+    );
     fsMod.writeFileSync(agentsPath, persona + block, "utf8");
   };
   const ensureBotSetup = async (botId: string) => {
@@ -318,6 +389,16 @@ async function setupBotService(): Promise<void> {
     },
     60 * 60 * 1000,
   );
+
+  // PLAN §9: durable scheduling — recover stale occurrences and fire due
+  // schedules at startup, then tick every 30s while the app runs. Schedules
+  // execute only while the application is running (MVP default).
+  await Effect.runPromise(scheduleService.tick()).catch((error) =>
+    console.error("Initial schedule tick failed", error instanceof Error ? error.message : error),
+  );
+  scheduleTickInterval = setInterval(() => {
+    runLogged(scheduleService.tick());
+  }, scheduleTickMs());
 
   // Token
   const tokenPath = join(userData, "api-token.txt");
@@ -360,9 +441,15 @@ async function setupBotService(): Promise<void> {
   ipcMain.handle("bebots:api:endpoint", () => apiEndpoint);
 
   // Tasks (IPC mirrors of the HTTP API; business logic stays in services).
-  ipcMain.handle("bebots:tasks:list", async (_event, options?: { requester?: string; assignee?: string; status?: TaskStatus; limit?: number }) => {
-    return Effect.runPromise(taskService.listTasks(options ?? {}));
-  });
+  ipcMain.handle(
+    "bebots:tasks:list",
+    async (
+      _event,
+      options?: { requester?: string; assignee?: string; status?: TaskStatus; limit?: number },
+    ) => {
+      return Effect.runPromise(taskService.listTasks(options ?? {}));
+    },
+  );
   ipcMain.handle("bebots:tasks:get", async (_event, id: string) => {
     return Effect.runPromise(taskService.getTask(id));
   });
@@ -377,6 +464,51 @@ async function setupBotService(): Promise<void> {
   });
   ipcMain.handle("bebots:tasks:delegate", async (_event, input) => {
     return Effect.runPromise(taskService.delegate(input));
+  });
+
+  // Schedules (IPC mirrors of the HTTP API; business logic stays in services).
+  ipcMain.handle(
+    "bebots:schedules:list",
+    async (_event, options?: { botId?: string; createdBy?: string; limit?: number }) => {
+      return Effect.runPromise(scheduleService.listSchedules(options));
+    },
+  );
+  ipcMain.handle("bebots:schedules:get", async (_event, id: string) => {
+    return Effect.runPromise(scheduleService.getSchedule(id as ScheduleId));
+  });
+  ipcMain.handle(
+    "bebots:schedules:create",
+    async (
+      _event,
+      input: {
+        botId: string;
+        prompt: string;
+        trigger: unknown;
+        enabled?: boolean;
+        conversationId?: string | null;
+        createdBy?: string | null;
+      },
+    ) => {
+      return Effect.runPromise(
+        scheduleService.createSchedule({
+          botId: input.botId,
+          prompt: input.prompt,
+          trigger: input.trigger,
+          ...(input.enabled !== undefined && { enabled: input.enabled }),
+          ...(input.conversationId !== undefined && { conversationId: input.conversationId }),
+          ...(input.createdBy !== undefined && { createdBy: input.createdBy }),
+        }),
+      );
+    },
+  );
+  ipcMain.handle("bebots:schedules:update", async (_event, id: string, patch) => {
+    return Effect.runPromise(scheduleService.updateSchedule(id, patch));
+  });
+  ipcMain.handle("bebots:schedules:delete", async (_event, id: string) => {
+    return Effect.runPromise(scheduleService.deleteSchedule(id));
+  });
+  ipcMain.handle("bebots:schedules:history", async (_event, id: string, limit?: number) => {
+    return Effect.runPromise(scheduleService.listHistory(id, limit));
   });
 
   ipcMain.handle(
@@ -437,10 +569,7 @@ async function setupBotService(): Promise<void> {
       // 127.0.0.1 and is bearer-token authed with no ambient credentials, so
       // a wildcard origin is acceptable (issue #20).
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader(
-        "Access-Control-Allow-Methods",
-        "GET, POST, PATCH, PUT, DELETE, OPTIONS",
-      );
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -730,8 +859,12 @@ async function setupBotService(): Promise<void> {
       if (req.method === "GET" && pathname === "/api/v1/tasks") {
         const list = await Effect.runPromise(
           taskService.listTasks({
-            ...(url.searchParams.get("requester") && { requester: url.searchParams.get("requester")! }),
-            ...(url.searchParams.get("assignee") && { assignee: url.searchParams.get("assignee")! }),
+            ...(url.searchParams.get("requester") && {
+              requester: url.searchParams.get("requester")!,
+            }),
+            ...(url.searchParams.get("assignee") && {
+              assignee: url.searchParams.get("assignee")!,
+            }),
             ...(url.searchParams.get("status") && {
               status: url.searchParams.get("status") as TaskStatus,
             }),
@@ -828,6 +961,109 @@ async function setupBotService(): Promise<void> {
           }),
         );
         sendJson(res, 201, task);
+        return;
+      }
+
+      // Schedules (PLAN §9)
+      if (req.method === "GET" && pathname === "/api/v1/schedules") {
+        const list = await Effect.runPromise(
+          scheduleService.listSchedules({
+            ...(url.searchParams.get("botId") && { botId: url.searchParams.get("botId")! }),
+            ...(url.searchParams.get("createdBy") && {
+              createdBy: url.searchParams.get("createdBy")!,
+            }),
+            ...(url.searchParams.get("limit") && { limit: Number(url.searchParams.get("limit")) }),
+          }),
+        );
+        sendJson(res, 200, list);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/api/v1/schedules") {
+        const body = (await readBody(req)) as {
+          botId?: string;
+          prompt?: string;
+          trigger?: unknown;
+          enabled?: boolean;
+          conversationId?: string | null;
+          createdBy?: string | null;
+        };
+        const trigger = validateScheduleTrigger(body.trigger);
+        if (!trigger.valid) {
+          sendJson(res, 400, { error: trigger.message });
+          return;
+        }
+        if (!body.botId) {
+          sendJson(res, 400, { error: "botId is required" });
+          return;
+        }
+        try {
+          const schedule = await Effect.runPromise(
+            scheduleService.createSchedule({
+              botId: body.botId,
+              prompt: body.prompt ?? "",
+              trigger: trigger.value,
+              ...(body.enabled !== undefined && { enabled: body.enabled }),
+              ...(body.conversationId !== undefined && { conversationId: body.conversationId }),
+              ...(body.createdBy !== undefined && { createdBy: body.createdBy }),
+            }),
+          );
+          sendJson(res, 201, schedule);
+        } catch (e) {
+          sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+      const scheduleMatch = pathname.match(/^\/api\/v1\/schedules\/([^/]+)$/);
+      if (scheduleMatch) {
+        const id = asScheduleId(decodeURIComponent(scheduleMatch[1] as string));
+        if (req.method === "GET") {
+          const schedule = await Effect.runPromise(scheduleService.getSchedule(id));
+          sendJson(res, schedule ? 200 : 404, schedule);
+          return;
+        }
+        if (req.method === "PATCH") {
+          const body = (await readBody(req)) as {
+            prompt?: string;
+            trigger?: unknown;
+            enabled?: boolean;
+          };
+          let validatedTrigger: ScheduleTrigger | undefined;
+          if (body.trigger !== undefined) {
+            const trigger = validateScheduleTrigger(body.trigger);
+            if (!trigger.valid) {
+              sendJson(res, 400, { error: trigger.message });
+              return;
+            }
+            validatedTrigger = trigger.value;
+          }
+          try {
+            const schedule = await Effect.runPromise(
+              scheduleService.updateSchedule(id, {
+                ...(body.prompt !== undefined && { prompt: body.prompt }),
+                ...(validatedTrigger !== undefined && { trigger: validatedTrigger }),
+                ...(body.enabled !== undefined && { enabled: body.enabled }),
+              }),
+            );
+            sendJson(res, 200, schedule);
+          } catch (e) {
+            sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+          }
+          return;
+        }
+        if (req.method === "DELETE") {
+          await Effect.runPromise(scheduleService.deleteSchedule(id));
+          sendJson(res, 204, {});
+          return;
+        }
+      }
+      const scheduleHistoryMatch = pathname.match(/^\/api\/v1\/schedules\/([^/]+)\/occurrences$/);
+      if (scheduleHistoryMatch && req.method === "GET") {
+        const id = asScheduleId(decodeURIComponent(scheduleHistoryMatch[1] as string));
+        const limitParam = url.searchParams.get("limit");
+        const history = await Effect.runPromise(
+          scheduleService.listHistory(id, limitParam ? Number(limitParam) : undefined),
+        );
+        sendJson(res, 200, history);
         return;
       }
 
@@ -1031,6 +1267,10 @@ app.on("before-quit", () => {
   if (sessionSweepInterval !== null) {
     clearInterval(sessionSweepInterval);
     sessionSweepInterval = null;
+  }
+  if (scheduleTickInterval !== null) {
+    clearInterval(scheduleTickInterval);
+    scheduleTickInterval = null;
   }
   closeDb?.();
 });

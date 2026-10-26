@@ -1,3 +1,5 @@
+export * from "./schedule.js";
+
 export type BotId = string & { readonly __brand: "BotId" };
 
 export function asBotId(value: string): BotId {
@@ -30,7 +32,7 @@ export function parseModelRef(value: string | null | undefined): ModelRef | null
   if (!value) return null;
   try {
     const parsed = validateModelRef(JSON.parse(value) as unknown);
-    return parsed.valid ? parsed.value ?? null : null;
+    return parsed.valid ? (parsed.value ?? null) : null;
   } catch {
     return null;
   }

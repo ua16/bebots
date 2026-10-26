@@ -178,6 +178,17 @@
   align-self: flex-end;
 }
 
+/* Scheduler markers ("Scheduled run triggered/failed") inside a thread. */
+.message-system {
+  align-self: center;
+  max-width: 90%;
+  background: transparent;
+  border: 1px dashed #d1d5db;
+  color: #6b7280;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.7rem;
+}
+
 .message-sender {
   font-size: 0.7rem;
   font-weight: 600;
@@ -450,4 +461,77 @@
   margin: 0.2rem 0 0;
   max-height: 8rem;
   overflow-y: auto;
+}
+
+.schedule-panel {
+  margin-top: 0.75rem;
+}
+
+.schedule-panel h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+}
+
+.schedule-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.schedule-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.schedule-trigger {
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.schedule-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-meta {
+  color: var(--muted, #888);
+  font-size: 0.75rem;
+}
+
+.schedule-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+
+.schedule-occurrences {
+  list-style: none;
+  padding: 0.35rem 0 0 0.5rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted, #888);
+}
+
+.schedule-new {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: stretch;
+}
+
+.schedule-new label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.78rem;
 }

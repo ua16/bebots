@@ -1,5 +1,17 @@
 import type { Bot, BotId } from "@bebots/domain";
-import type { Run, RunId, RunStatus, Task, TaskId, TaskStatus, ActivityEvent } from "@bebots/domain";
+import type {
+  Run,
+  RunId,
+  RunStatus,
+  Task,
+  TaskId,
+  TaskStatus,
+  ActivityEvent,
+  Schedule,
+  ScheduleId,
+  ScheduleOccurrence,
+  ScheduleOccurrenceStatus,
+} from "@bebots/domain";
 import type {
   Conversation,
   ConversationId,
@@ -152,6 +164,51 @@ export interface ActivityRepository {
     readonly entityId?: string;
     readonly limit?: number;
   }) => Effect.Effect<readonly ActivityEvent[], RepositoryError>;
+}
+
+/**
+ * Persistent schedules (PLAN §9): durable schedule records plus their
+ * queued occurrences. Occurrences are the durable queue — they are written
+ * idempotently per (scheduleId, scheduledFor) and transition to a run.
+ */
+export interface ScheduleRepository {
+  readonly create: (schedule: Schedule) => Effect.Effect<Schedule, RepositoryError>;
+  readonly findById: (id: ScheduleId) => Effect.Effect<Schedule | null, RepositoryError>;
+  readonly findAll: (options?: {
+    readonly botId?: BotId;
+    readonly enabled?: boolean;
+    readonly createdBy?: string;
+    readonly limit?: number;
+  }) => Effect.Effect<readonly Schedule[], RepositoryError>;
+  /** Enabled schedules with nextRunAt due (<= now). */
+  readonly findDue: (now: number) => Effect.Effect<readonly Schedule[], RepositoryError>;
+  readonly update: (schedule: Schedule) => Effect.Effect<Schedule, RepositoryError | NotFoundError>;
+  readonly delete: (id: ScheduleId) => Effect.Effect<void, RepositoryError | NotFoundError>;
+  /**
+   * Insert an occurrence. Idempotent: when a row already exists for
+   * (scheduleId, scheduledFor) the existing row is returned untouched.
+   */
+  readonly createOccurrence: (
+    occurrence: ScheduleOccurrence,
+  ) => Effect.Effect<ScheduleOccurrence, RepositoryError>;
+  readonly findOccurrence: (
+    id: ScheduleOccurrence["id"],
+  ) => Effect.Effect<ScheduleOccurrence | null, RepositoryError>;
+  readonly findOccurrenceByRun: (
+    runId: RunId,
+  ) => Effect.Effect<ScheduleOccurrence | null, RepositoryError>;
+  readonly listOccurrences: (
+    scheduleId: ScheduleId,
+    options?: { readonly limit?: number },
+  ) => Effect.Effect<readonly ScheduleOccurrence[], RepositoryError>;
+  readonly findOccurrences: (options?: {
+    readonly status?: ScheduleOccurrenceStatus;
+    readonly limit?: number;
+  }) => Effect.Effect<readonly ScheduleOccurrence[], RepositoryError>;
+  readonly updateOccurrence: (
+    occurrence: ScheduleOccurrence,
+  ) => Effect.Effect<ScheduleOccurrence, RepositoryError | NotFoundError>;
+  readonly deleteOccurrences: (scheduleId: ScheduleId) => Effect.Effect<number, RepositoryError>;
 }
 
 /** Key/value storage for app-wide mutable settings. */
