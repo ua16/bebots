@@ -162,6 +162,8 @@ describe("main entry", () => {
   it("does not quit on window-all-closed on darwin", async () => {
     const handlers: Record<string, (...args: unknown[]) => void> = {};
     const quit = vi.fn();
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     vi.doMock("electron", () => {
       const BrowserWindow = vi.fn().mockImplementation(() => ({
         on: vi.fn(),
@@ -190,6 +192,7 @@ describe("main entry", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     handlers["window-all-closed"]?.();
     expect(quit).not.toHaveBeenCalled();
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
   it("applies the strict CSP in production mode", async () => {
