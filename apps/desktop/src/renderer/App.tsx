@@ -114,6 +114,13 @@ function selectionToSelectValue(selection: ModelSelection): string {
   return JSON.stringify(selection.ref);
 }
 
+/** Select value for a catalog model — canonical ref only, so the
+ *  `onChange` round-trip through the domain parser reproduces it exactly
+ *  (the full `ApiModel` carries extra keys the parser strips). */
+function modelToSelectValue(m: ApiModel): string {
+  return JSON.stringify({ providerID: m.providerID, id: m.id });
+}
+
 /** Inverse of `selectionToSelectValue`; `null` signals an unparseable key. */
 function selectValueToSelection(value: string): ModelSelection | null {
   if (value === APP_DEFAULT_KEY) return { kind: "app-default" };
@@ -757,7 +764,10 @@ export function App() {
               {modelGroups.map(([provider, items]) => (
                 <optgroup key={provider} label={provider}>
                   {items.map((m) => (
-                    <option key={m.id} value={selectionToSelectValue({ kind: "ref", ref: m })}>
+                    <option
+                      key={`${m.providerID}/${m.id}`}
+                      value={modelToSelectValue(m)}
+                    >
                       {m.name}
                     </option>
                   ))}
@@ -999,7 +1009,10 @@ export function App() {
                   {modelGroups.map(([provider, items]) => (
                     <optgroup key={provider} label={provider}>
                       {items.map((m) => (
-                        <option key={m.id} value={selectionToSelectValue({ kind: "ref", ref: m })}>
+                        <option
+                          key={`${m.providerID}/${m.id}`}
+                          value={modelToSelectValue(m)}
+                        >
                           {m.name}
                         </option>
                       ))}
