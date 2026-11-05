@@ -17,3 +17,11 @@ Default five-role label vocabulary (`needs-triage`, `needs-info`, `ready-for-age
 ### Domain docs
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### In progress: API layer foundation refactor
+
+The HTTP API is being migrated to Effect `HttpApi` (milestone branch stack; see
+`REFACTOR-PLAN.md` and `docs/adr/0001-http-api-architecture.md`). While this is in
+flight: agents never merge PRs, no new hand-rolled `as` casts, wire-behavior parity is
+the contract, and `PLAN.md` is untouched. Read `REFACTOR-PLAN.md` before touching
+`packages/api`, the HTTP routes, or the renderer client.

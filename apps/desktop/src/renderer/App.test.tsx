@@ -145,6 +145,7 @@ describe("App", () => {
           conversationId: string;
           senderType: "bot" | "human";
           content: string;
+          deliveryState: string;
           createdAt: number;
         }[]
       | undefined = undefined;
@@ -152,7 +153,7 @@ describe("App", () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = String(input).replace("http://127.0.0.1:4747", "");
       const ok = (body: unknown, status = 200) =>
-        ({ ok: true, status, json: async () => body }) as unknown as Response;
+        new Response(JSON.stringify(body), { status });
       if (path === "/api/v1/conversations") {
         if (init?.method === "POST") {
           return ok(
@@ -185,6 +186,7 @@ describe("App", () => {
             conversationId: "c1",
             senderType: "bot" as const,
             content: "greetings",
+            deliveryState: "delivered" as const,
             createdAt: 1,
           },
         ];
@@ -200,6 +202,7 @@ describe("App", () => {
               conversationId: "c1",
               senderType: "human" as const,
               content: "why hello",
+              deliveryState: "delivered" as const,
               createdAt: 2,
             },
           ];
@@ -217,6 +220,7 @@ describe("App", () => {
               conversationId: "c1",
               senderType: "bot" as const,
               content: "here you go",
+              deliveryState: "delivered" as const,
               createdAt: 3,
             },
           ];
@@ -240,13 +244,33 @@ describe("App", () => {
     expect(await screen.findByText("why hello")).toBeTruthy();
     await screen.findByText("here you go", {}, { timeout: 5_000 });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4747/api/v1/conversations/c1/messages",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer tok" }),
-        body: JSON.stringify({ content: "why hello" }),
-      }),
+    // The typed client rides FetchHttpClient: find the actual send and assert
+    // the wire shape (auth header + JSON body) at that call.
+    const sendCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "http://127.0.0.1:4747/api/v1/conversations/c1/messages" &&
+        init?.method === "POST",
     );
+    expect(sendCall).toBeDefined();
+    const headers = sendCall?.[1]?.headers;
+    const auth =
+      typeof headers === "object" && headers !== null
+        ? (Reflect.get(headers, "authorization") ?? Reflect.get(headers, "Authorization"))
+        : undefined;
+    expect(auth).toBe("Bearer tok");
+    // FetchHttpClient sends the encoded payload as raw bytes; decode for the
+    // shape assertion.
+    const rawBody = sendCall?.[1]?.body;
+    let bodyText: string;
+    if (typeof rawBody === "string") {
+      bodyText = rawBody;
+    } else if (rawBody instanceof Uint8Array) {
+      bodyText = new TextDecoder().decode(rawBody);
+    } else if (rawBody instanceof ArrayBuffer) {
+      bodyText = new TextDecoder().decode(rawBody);
+    } else {
+      bodyText = String(rawBody);
+    }
+    expect(JSON.parse(bodyText)).toEqual({ content: "why hello" });
   });
 });

@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 /* eslint-disable @typescript-eslint/no-this-alias */
 import {
   asActivityId,
@@ -7,7 +7,7 @@ import {
   asScheduleId,
   asScheduleOccurrenceId,
   nextScheduleFire,
-  validateScheduleTrigger,
+  ScheduleTriggerSchema,
 } from "@bebots/domain";
 import type {
   Conversation,
@@ -188,12 +188,14 @@ export class ScheduleService implements ScheduleResultRecorder {
       if (!bot) {
         return yield* Effect.fail(new NotFoundError("Bot", input.botId));
       }
-      const trigger = validateScheduleTrigger(input.trigger);
-      if (!trigger.valid) {
-        return yield* Effect.fail(new ValidationError("trigger", trigger.message));
+      let trigger: ScheduleTrigger;
+      try {
+        trigger = Schema.decodeUnknownSync(ScheduleTriggerSchema)(input.trigger);
+      } catch (e) {
+        return yield* Effect.fail(new ValidationError("trigger", (e as { message?: string }).message ?? "Invalid trigger"));
       }
       // A `once` trigger in the past can never fire — reject rather than lie.
-      if (trigger.value.kind === "once" && trigger.value.at <= clock.now()) {
+      if (trigger.kind === "once" && trigger.at <= clock.now()) {
         return yield* Effect.fail(
           new ValidationError("trigger", "Trigger at must be in the future"),
         );
@@ -222,12 +224,12 @@ export class ScheduleService implements ScheduleResultRecorder {
         id,
         botId: asBotId(input.botId),
         prompt,
-        trigger: trigger.value,
+        trigger,
         enabled,
         conversationId: input.conversationId ?? null,
         createdBy,
         anchorAt: anchor,
-        nextRunAt: enabled ? nextScheduleFire(trigger.value, now, anchor) : null,
+        nextRunAt: enabled ? nextScheduleFire(trigger, now, anchor) : null,
         lastRunAt: null,
         createdAt: now,
         updatedAt: now,
@@ -255,11 +257,13 @@ export class ScheduleService implements ScheduleResultRecorder {
       }
       let trigger: ScheduleTrigger = schedule.trigger;
       if (patch.trigger !== undefined) {
-        const validated = validateScheduleTrigger(patch.trigger);
-        if (!validated.valid) {
-          return yield* Effect.fail(new ValidationError("trigger", validated.message));
+        let decoded: ScheduleTrigger;
+        try {
+          decoded = Schema.decodeUnknownSync(ScheduleTriggerSchema)(patch.trigger);
+        } catch (e) {
+          return yield* Effect.fail(new ValidationError("trigger", (e as { message?: string }).message ?? "Invalid trigger"));
         }
-        trigger = validated.value;
+        trigger = decoded;
         if (trigger.kind === "once" && trigger.at <= clock.now()) {
           return yield* Effect.fail(
             new ValidationError("trigger", "Trigger at must be in the future"),

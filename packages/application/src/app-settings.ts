@@ -1,6 +1,6 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { ModelRef } from "@bebots/domain";
-import { parseModelRef, serializeModelRef, validateModelRef } from "@bebots/domain";
+import { ModelRefPatchSchema, parseModelRef, serializeModelRef } from "@bebots/domain";
 import type { SettingsRepository } from "./repositories.js";
 import { type RepositoryError, ValidationError } from "./errors.js";
 
@@ -21,12 +21,14 @@ export class AppSettingsService {
   setDefaultModel(
     model: ModelRef | null,
   ): Effect.Effect<void, RepositoryError | ValidationError> {
-    const validated = validateModelRef(model);
-    if (!validated.valid) {
-      return Effect.fail(new ValidationError(validated.field, validated.message));
+    let validated: ModelRef | null;
+    try {
+      validated = Schema.decodeUnknownSync(ModelRefPatchSchema)(model) ?? null;
+    } catch {
+      return Effect.fail(new ValidationError("model", "Invalid model reference"));
     }
     return Effect.asVoid(
-      this.repo.set(DEFAULT_MODEL_KEY, serializeModelRef(validated.value ?? null)),
+      this.repo.set(DEFAULT_MODEL_KEY, serializeModelRef(validated)),
     );
   }
 }

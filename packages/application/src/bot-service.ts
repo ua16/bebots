@@ -1,6 +1,6 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { Bot, BotId, BotStatus, ModelRef } from "@bebots/domain";
-import { asBotId, validateModelRef } from "@bebots/domain";
+import { asBotId, ModelRefPatchSchema } from "@bebots/domain";
 import type { BotRepository, BotWorkspace, Clock, IdGenerator } from "./repositories.js";
 import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
 
@@ -63,13 +63,12 @@ export class BotService {
       }
       const description = (input.description ?? "").trim();
       const persona = input.persona ?? "";
-      const modelValidated = validateModelRef(input.model);
-      if (!modelValidated.valid) {
-        return yield* Effect.fail(
-          new ValidationError(modelValidated.field, modelValidated.message),
-        );
+      let model: ModelRef | null;
+      try {
+        model = Schema.decodeUnknownSync(ModelRefPatchSchema)(input.model) ?? null;
+      } catch {
+        return yield* Effect.fail(new ValidationError("model", "Invalid model reference"));
       }
-      const model = modelValidated.value ?? null;
       let id: BotId;
       try {
         id = asBotId(ids.generate());
@@ -121,11 +120,15 @@ export class BotService {
           return yield* Effect.fail(e as ValidationError);
         }
       }
-      const modelValidated = validateModelRef(input.model);
-      if (!modelValidated.valid) {
-        return yield* Effect.fail(
-          new ValidationError(modelValidated.field, modelValidated.message),
-        );
+      let decodedModel: ModelRef | null | undefined = undefined;
+      let hasModel = false;
+      if (input.model !== undefined) {
+        try {
+          decodedModel = Schema.decodeUnknownSync(ModelRefPatchSchema)(input.model) ?? null;
+        } catch {
+          return yield* Effect.fail(new ValidationError("model", "Invalid model reference"));
+        }
+        hasModel = true;
       }
       const updated: Bot = {
         ...existing,
@@ -134,9 +137,7 @@ export class BotService {
           input.description !== undefined ? input.description.trim() : existing.description,
         persona: input.persona !== undefined ? input.persona : existing.persona,
         status: input.status !== undefined ? input.status : existing.status,
-        // Only touch the model when the caller sent the field at all
-        // (undefined = keep, null = clear, ref = set); see `validateModelRef`.
-        ...(input.model !== undefined && { model: modelValidated.value ?? null }),
+        ...(hasModel && { model: decodedModel ?? null }),
         updatedAt: clock.now(),
       };
       yield* repo.update(updated);

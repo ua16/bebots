@@ -1,15 +1,15 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-type McpRpcBody = {
-  result?: {
-    tools?: { name: string }[];
-    content?: { type: string; text: string }[];
-  };
-};
+import {
+  api as sharedApi,
+  bootTestApp,
+  createBot as createBotViaApi,
+  mcpRpc,
+  toolPayload as toolPayloadFromContract,
+  type BootedApp,
+  type McpRpcBody,
+} from "./test-boot";
+import Database from "better-sqlite3";
 
 type SendMessageResult = {
   conversationId: string;
@@ -48,10 +48,18 @@ vi.mock("@bebots/runtime-opencode", async () => {
     }
     close() {}
   }
-  return { OpenCodeRuntime: FakeRuntime, createOpenCodeRuntime: () => new FakeRuntime(), OpenCodeAdapter: FakeRuntime };
+  return {
+    OpenCodeRuntime: FakeRuntime,
+    createOpenCodeRuntime: () => new FakeRuntime(),
+    OpenCodeAdapter: FakeRuntime,
+  };
 });
 
-async function pollUntil<T>(probe: () => Promise<T>, ok: (value: T) => boolean, timeoutMs = 5000): Promise<T> {
+async function pollUntil<T>(
+  probe: () => Promise<T>,
+  ok: (value: T) => boolean,
+  timeoutMs = 5000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await probe();
@@ -62,97 +70,87 @@ async function pollUntil<T>(probe: () => Promise<T>, ok: (value: T) => boolean, 
 }
 
 describe("MCP bot-to-bot send_message session continuity (live app boot)", () => {
-  let dir: string;
-  let base: string;
-  let token: string;
+  let app: BootedApp;
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), "bebots-mcp-link-"));
-    vi.resetModules();
-    process.env.ELECTRON_RENDERER_URL = "http://localhost:5173";
-    const ipcMain = { handle: vi.fn() };
-    const BrowserWindow = vi.fn().mockImplementation(() => ({ on: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(), show: vi.fn() }));
-    const winCtor = BrowserWindow as unknown as { getAllWindows?: () => unknown[] };
-    winCtor.getAllWindows = vi.fn(() => []);
-    vi.doMock("electron", () => ({
-      app: { isPackaged: false, getPath: () => dir, whenReady: () => Promise.resolve(), on: vi.fn(), quit: vi.fn(), commandLine: { appendSwitch: vi.fn() } },
-      BrowserWindow,
-      ipcMain,
-      session: { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } },
-    }));
-    await import("./index.js");
-    await new Promise((r) => setTimeout(r, 300));
-    const fs = await import("node:fs");
-    const port = fs.readFileSync(join(dir, "api-port.txt"), "utf8").trim();
-    base = `http://127.0.0.1:${port}`;
-    token = fs.readFileSync(join(dir, "api-token.txt"), "utf8").trim();
+    app = await bootTestApp({
+      tmpPrefix: "bebots-mcp-link-",
+      env: { ELECTRON_RENDERER_URL: "http://localhost:5173" },
+    });
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    app.dispose();
   });
 
-  async function api(method: string, path: string, body?: unknown) {
-    const res = await fetch(`${base}${path}`, {
-      method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      ...(body !== undefined && { body: JSON.stringify(body) }),
-    });
-    return { status: res.status, body: (await res.json()) as unknown };
+  function api(method: string, path: string, body?: unknown) {
+    return sharedApi(app, method, path, body);
   }
 
-  async function rpc(method: string, params: Record<string, unknown>, id: number, botId: string) {
-    const res = await fetch(`${base}/mcp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        Authorization: `Bearer ${token}`,
-        "X-Bebots-Bot-Id": botId,
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    });
-    return (await res.json()) as McpRpcBody;
+  function rpc(method: string, params: Record<string, unknown>, id: number, botId: string) {
+    return mcpRpc(app, method, params, id, { "X-Bebots-Bot-Id": botId }).then(
+      (result) => result.body,
+    );
   }
 
   function toolPayload(response: McpRpcBody): SendMessageResult {
-    const text = response.result?.content?.[0]?.text ?? "";
-    return JSON.parse(text) as SendMessageResult;
+    return toolPayloadFromContract<SendMessageResult>(response);
   }
 
-  async function createBot(name: string): Promise<{ id: string }> {
-    const res = await api("POST", "/api/v1/bots", { name });
-    return res.body as { id: string };
+  function createBot(name: string): Promise<{ id: string }> {
+    return createBotViaApi(app, name);
   }
 
   async function waitMessages(conversationId: string, min: number): Promise<unknown[]> {
-    return pollUntil(async () => {
-      const res = await api("GET", `/api/v1/conversations/${conversationId}/messages`);
-      return (res.body as { messages?: unknown[] } | null)?.messages ?? (res.body as unknown[]);
-    }, (messages) => (messages as unknown[]).length >= min);
+    return pollUntil(
+      async () => {
+        const res = await api("GET", `/api/v1/conversations/${conversationId}/messages`);
+        return (res.body as { messages?: unknown[] } | null)?.messages ?? (res.body as unknown[]);
+      },
+      (messages) => (messages as unknown[]).length >= min,
+    );
   }
 
   it("routes a caller's follow-up sends into the same pinned conversation and the same session", async () => {
     const botA = await createBot("Caller");
     const botB = await createBot("Target");
 
-    await rpc("initialize", {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: { name: "test", version: "1" },
-    }, 1, botA.id);
+    await rpc(
+      "initialize",
+      {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1" },
+      },
+      1,
+      botA.id,
+    );
 
-    const first = toolPayload(await rpc("tools/call", {
-      name: "send_message",
-      arguments: { target_bot_id: botB.id, content: "first message" },
-    }, 2, botA.id));
+    const first = toolPayload(
+      await rpc(
+        "tools/call",
+        {
+          name: "send_message",
+          arguments: { target_bot_id: botB.id, content: "first message" },
+        },
+        2,
+        botA.id,
+      ),
+    );
     expect(first.runs).toHaveLength(1);
     expect(first.runs[0]?.status).toBe("succeeded");
 
-    const second = toolPayload(await rpc("tools/call", {
-      name: "send_message",
-      arguments: { target_bot_id: botB.id, content: "follow-up message" },
-    }, 3, botA.id));
+    const second = toolPayload(
+      await rpc(
+        "tools/call",
+        {
+          name: "send_message",
+          arguments: { target_bot_id: botB.id, content: "follow-up message" },
+        },
+        3,
+        botA.id,
+      ),
+    );
     expect(second.runs).toHaveLength(1);
     expect(second.runs[0]?.status).toBe("succeeded");
 
@@ -169,12 +167,17 @@ describe("MCP bot-to-bot send_message session continuity (live app boot)", () =>
 
     // Persisted session bookkeeping: exactly one ConversationSession row for
     // the pinned conversation, owned by the target bot.
-    await pollUntil(() => Promise.resolve(true), () => true);
-    const db = new Database(join(dir, "app.sqlite"), { readonly: true });
+    await pollUntil(
+      () => Promise.resolve(true),
+      () => true,
+    );
+    const db = new Database(join(app.dir, "app.sqlite"), { readonly: true });
     try {
       const convId = first.conversationId;
       const sessions = db
-        .prepare("SELECT runtime_session_id, bot_id FROM conversation_sessions WHERE conversation_id = ? AND status = 'active'")
+        .prepare(
+          "SELECT runtime_session_id, bot_id FROM conversation_sessions WHERE conversation_id = ? AND status = 'active'",
+        )
         .all(convId) as { runtime_session_id: string; bot_id: string | null }[];
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.bot_id).toBe(botB.id);
@@ -193,7 +196,9 @@ describe("MCP bot-to-bot send_message session continuity (live app boot)", () =>
       // The whole exchange lives in that thread: caller's sends and the
       // target's replies.
       const messages = await waitMessages(convId, 4);
-      expect(messages.every((m) => (m as { conversationId: string }).conversationId === convId)).toBe(true);
+      expect(
+        messages.every((m) => (m as { conversationId: string }).conversationId === convId),
+      ).toBe(true);
     } finally {
       db.close();
     }

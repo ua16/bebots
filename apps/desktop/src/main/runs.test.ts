@@ -1,142 +1,74 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import { asBotId, asRunId } from "@bebots/domain";
 import { createSqliteRunRepository, migrate, openDatabase } from "@bebots/persistence";
-
-vi.mock("@bebots/runtime-opencode", async () => {
-  const { Effect, Stream } = await import("effect");
-
-  class FakeRuntime {
-    readonly id = "fake";
-    readonly capabilities = { streaming: true, resumableSessions: true, cancellation: true };
-    startRun(request: { sessionId?: string }) {
-      return Effect.succeed({ runId: "rt-1", sessionId: request.sessionId ?? "sess-1" });
-    }
-    cancelRun() {
-      return Effect.void;
-    }
-    streamEvents() {
-      return Stream.empty;
-    }
-    getResult() {
-      return Effect.succeed({ exitCode: 0, summary: "ok", sessionId: "sess-1" });
-    }
-    close() {
-      // no-op
-    }
-  }
-
-  return {
-    OpenCodeRuntime: FakeRuntime,
-    createOpenCodeRuntime: () => new FakeRuntime(),
-    OpenCodeAdapter: FakeRuntime,
-  };
-});
-
-type Handler = (...args: unknown[]) => Promise<unknown>;
+import { bootTestApp, type BootOptions, type BootedApp } from "./test-boot";
+vi.mock("@bebots/runtime-opencode", () => import("./fake-runtime"));
 
 describe("runs IPC and HTTP API", () => {
-  let dir: string;
-  let handlers: Record<string, Handler>;
-  let appHandlers: Record<string, (...args: unknown[]) => unknown>;
+  let app: BootedApp;
   let base: string;
   let token: string;
 
-  beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), "bebots-runs-"));
-    vi.resetModules();
-    process.env.ELECTRON_RENDERER_URL = "http://localhost:5173";
-    handlers = {};
-    appHandlers = {};
-
-    const ipcMain = {
-      handle: vi.fn((channel: string, cb: unknown) => {
-        handlers[channel] = cb as Handler;
-      }),
-    };
-    const BrowserWindow = vi.fn().mockImplementation(() => ({
-      on: vi.fn(),
-      loadURL: vi.fn(),
-      loadFile: vi.fn(),
-      show: vi.fn(),
-    }));
-    (BrowserWindow as unknown as { getAllWindows: () => unknown[] }).getAllWindows = vi.fn(
-      () => [],
-    );
-
-    vi.doMock("electron", () => ({
-      app: {
-        isPackaged: false,
-        getPath: () => dir,
-        whenReady: () => Promise.resolve(),
-        on: (event: string, cb: (...args: unknown[]) => unknown) => {
-          appHandlers[event] = cb;
-        },
-        quit: vi.fn(),
-        commandLine: { appendSwitch: vi.fn() },
-      },
-      BrowserWindow,
-      ipcMain,
-      session: { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } },
-    }));
-  });
-
-  async function boot(): Promise<void> {
-    await import("./index");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    base = `http://127.0.0.1:${readFileSync(join(dir, "api-port.txt"), "utf8").trim()}`;
-    token = readFileSync(join(dir, "api-token.txt"), "utf8").trim();
+  async function boot(options: BootOptions = {}): Promise<void> {
+    app = await bootTestApp({
+      tmpPrefix: "bebots-runs-",
+      env: { ELECTRON_RENDERER_URL: "http://localhost:5173" },
+      ...options,
+    });
+    base = app.base;
+    token = app.token;
   }
 
   afterEach(() => {
-    appHandlers["before-quit"]?.();
+    app?.appHandlers["before-quit"]?.();
     delete process.env.ELECTRON_RENDERER_URL;
     vi.restoreAllMocks();
-    rmSync(dir, { recursive: true, force: true });
+    app?.dispose();
   });
 
   it("starts, lists, awaits, and cancels runs over IPC", async () => {
     await boot();
-    const bot = (await handlers["bebots:bots:create"]!(null, { name: "Runner" })) as {
+    const bot = (await app.handlers["bebots:bots:create"]!(null, { name: "Runner" })) as {
       id: string;
       name: string;
     };
     expect(bot.name).toBe("Runner");
 
-    const listed = (await handlers["bebots:bots:list"]!(null, false)) as { homePath: string }[];
+    const listed = (await app.handlers["bebots:bots:list"]!(null, false)) as { homePath: string }[];
     expect(listed[0]?.homePath).toContain("bots");
 
-    const run = (await handlers["bebots:runs:start"]!(null, {
+    const run = (await app.handlers["bebots:runs:start"]!(null, {
       botId: bot.id,
       prompt: "go",
     })) as { id: string; status: string };
     expect(run.status).toBe("running");
 
-    const fetched = (await handlers["bebots:runs:get"]!(null, run.id)) as { id: string };
+    const fetched = (await app.handlers["bebots:runs:get"]!(null, run.id)) as { id: string };
     expect(fetched.id).toBe(run.id);
 
-    const runs = (await handlers["bebots:runs:list"]!(null, { botId: bot.id })) as unknown[];
+    const runs = (await app.handlers["bebots:runs:list"]!(null, { botId: bot.id })) as unknown[];
     expect(runs).toHaveLength(1);
 
-    const events = await handlers["bebots:runs:events"]!(null, run.id);
+    const events = await app.handlers["bebots:runs:events"]!(null, run.id);
     expect(Array.isArray(events)).toBe(true);
 
-    const awaited = (await handlers["bebots:runs:await"]!(null, run.id, 2000)) as {
+    const awaited = (await app.handlers["bebots:runs:await"]!(null, run.id, 2000)) as {
       status: string;
     };
     expect(awaited.status).toBe("succeeded");
 
-    const cancelled = (await handlers["bebots:runs:cancel"]!(null, run.id)) as { status: string };
+    const cancelled = (await app.handlers["bebots:runs:cancel"]!(null, run.id)) as {
+      status: string;
+    };
     expect(cancelled.status).toBe("cancelled");
 
-    const root = (await handlers["bebots:workspace:root"]!(null)) as string;
+    const root = (await app.handlers["bebots:workspace:root"]!(null)) as string;
     expect(root).toContain("bots");
 
-    const unknown = await handlers["bebots:bots:get"]!(null, "missing");
+    const unknown = await app.handlers["bebots:bots:get"]!(null, "missing");
     expect(unknown).toBeNull();
   });
 
@@ -211,36 +143,42 @@ describe("runs IPC and HTTP API", () => {
     expect(notFound.status).toBe(404);
 
     const badBody = await fetch(`${base}/api/v1/bots`, { method: "POST", body: "{" });
-    expect(badBody.status).toBe(500);
+    // Malformed JSON body now maps to 400 (named exception; see REFACTOR-PLAN.md contract gate).
+    expect(badBody.status).toBe(400);
   });
 
   it("reuses an existing API token", async () => {
-    writeFileSync(join(dir, "api-token.txt"), "existing-token", "utf8");
-    await boot();
+    await boot({
+      beforeBoot(dir) {
+        writeFileSync(join(dir, "api-token.txt"), "existing-token", "utf8");
+      },
+    });
 
     const res = await fetch(`${base}/api/v1/token`);
     expect(((await res.json()) as { token: string }).token).toBe("existing-token");
   });
 
   it("marks stale running runs as failed on startup", async () => {
-    const db = await openDatabase(join(dir, "app.sqlite"));
-    migrate(db);
-    const repo = createSqliteRunRepository(db);
-    await Effect.runPromise(
-      repo.create({
-        id: asRunId("stale"),
-        botId: asBotId("bot-1"),
-        triggerType: "manual",
-        prompt: "p",
-        status: "running",
-        timeoutMs: 1,
-        createdAt: 1,
-        updatedAt: 1,
-      }),
-    );
-    db.close();
-
-    await boot();
+    await boot({
+      beforeBoot: async (bootDir) => {
+        const db = await openDatabase(join(bootDir, "app.sqlite"));
+        migrate(db);
+        const repo = createSqliteRunRepository(db);
+        await Effect.runPromise(
+          repo.create({
+            id: asRunId("stale"),
+            botId: asBotId("bot-1"),
+            triggerType: "manual",
+            prompt: "p",
+            status: "running",
+            timeoutMs: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          }),
+        );
+        db.close();
+      },
+    });
 
     const res = await fetch(`${base}/api/v1/runs/stale`);
     const run = (await res.json()) as { status: string; error?: string };

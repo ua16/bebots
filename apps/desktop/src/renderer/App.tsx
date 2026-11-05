@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiRequest } from "./apiClient";
+import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
 import { parseModelRef } from "@bebots/domain";
 import "./styles.css";
@@ -7,11 +9,6 @@ declare global {
   interface Window {
     bebots?: BebotsPreloadApi;
   }
-}
-
-interface ApiEndpoint {
-  readonly url: string;
-  readonly token: string;
 }
 
 interface ApiConversation {
@@ -27,7 +24,7 @@ interface ApiMessage {
   readonly id: string;
   readonly conversationId: string;
   readonly senderType: "human" | "bot" | "system";
-  readonly senderId?: string | null;
+  readonly senderId?: string | null | undefined;
   readonly content: string;
   readonly createdAt: number;
 }
@@ -37,8 +34,8 @@ interface ApiRun {
   readonly botId: string;
   readonly status: string;
   readonly prompt: string;
-  readonly summary?: string;
-  readonly error?: string;
+  readonly summary?: string | undefined;
+  readonly error?: string | undefined;
   readonly createdAt: number;
 }
 
@@ -57,9 +54,9 @@ interface ApiSchedule {
     | { kind: "cron"; expression: string; timezone: string };
   readonly enabled: boolean;
   /** The schedule's dedicated thread with the user (provisioned on first fire). */
-  readonly conversationId?: string | null;
-  readonly nextRunAt: number | null;
-  readonly lastRunAt: number | null;
+  readonly conversationId?: string | null | undefined;
+  readonly nextRunAt?: number | null | undefined;
+  readonly lastRunAt?: number | null | undefined;
   readonly createdAt: number;
 }
 
@@ -68,9 +65,9 @@ interface ApiScheduleOccurrence {
   readonly scheduleId: string;
   readonly scheduledFor: number;
   readonly status: string;
-  readonly runId: string | null;
+  readonly runId?: string | null | undefined;
   readonly attempts: number;
-  readonly error: string | null;
+  readonly error?: string | null | undefined;
 }
 
 /** Short human description of a schedule trigger, e.g. "every 5m" or cron. */
@@ -143,25 +140,6 @@ function appDefaultToSelection(ref: ApiModelRef | null | undefined): ModelSelect
 /** The model override (or explicit `null`) implied by a selection. */
 function selectionToApiModel(selection: ModelSelection): ApiModelRef | null {
   return selection.kind === "ref" ? selection.ref : null;
-}
-
-async function apiFetch<T>(
-  endpoint: ApiEndpoint,
-  path: string,
-  init?: { readonly method?: string; readonly body?: unknown },
-): Promise<T> {
-  const res = await fetch(`${endpoint.url}${path}`, {
-    method: init?.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${endpoint.token}`,
-      "Content-Type": "application/json",
-    },
-    ...(init?.body !== undefined && { body: JSON.stringify(init.body) }),
-  });
-  if (!res.ok) {
-    throw new Error(`API ${path} failed: ${res.status}`);
-  }
-  return (await res.json()) as T;
 }
 
 export function App() {
@@ -245,7 +223,9 @@ export function App() {
     if (!endpoint) return;
     try {
       setConversations(
-        await apiFetch<readonly ApiConversation[]>(endpoint, "/api/v1/conversations"),
+        await apiRequest(endpoint, "/api/v1/conversations", (c) =>
+          c.conversations.listConversations(),
+        ),
       );
     } catch (e) {
       setError(String(e));
@@ -259,10 +239,10 @@ export function App() {
 
   useEffect(() => {
     if (!endpoint) return;
-    void apiFetch<readonly ApiModel[]>(endpoint, "/api/v1/models")
+    void apiRequest(endpoint, "/api/v1/models", (c) => c.models.models())
       .then((list) => setModels(list.filter((m) => m.enabled)))
       .catch(() => {});
-    void apiFetch<{ defaultModel?: ApiModelRef | null }>(endpoint, "/api/v1/settings")
+    void apiRequest(endpoint, "/api/v1/settings", (c) => c.settings.getSettings())
       .then((s) => setDefaultModelSelection(appDefaultToSelection(s.defaultModel)))
       .catch(() => {});
   }, [endpoint]);
@@ -283,9 +263,10 @@ export function App() {
   const refreshMessages = async (conversationId: string) => {
     if (!endpoint) return;
     try {
-      const list = await apiFetch<readonly ApiMessage[]>(
+      const list = await apiRequest(
         endpoint,
         `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+        (c) => c.conversations.listMessages({ params: { id: conversationId } }),
       );
       setMessages(list);
     } catch (e) {
@@ -319,9 +300,10 @@ export function App() {
       // stop clobbering the thread once it is no longer the visible one.
       if (activeIdRef.current !== conversationId) return;
       attempts += 1;
-      void apiFetch<readonly ApiMessage[]>(
+      void apiRequest(
         endpointAt,
         `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+        (c) => c.conversations.listMessages({ params: { id: conversationId } }),
       )
         .then((list) => {
           setMessages(list);
@@ -350,10 +332,14 @@ export function App() {
   const handleSendMessage = async () => {
     if (!endpoint || !activeConversationId || draft.trim().length === 0) return;
     try {
-      const reply = await apiFetch<{ message: ApiMessage; runId: string | null }>(
+      const reply = await apiRequest(
         endpoint,
         `/api/v1/conversations/${encodeURIComponent(activeConversationId)}/messages`,
-        { method: "POST", body: { content: draft } },
+        (c) =>
+          c.conversations.postMessage({
+            params: { id: activeConversationId },
+            payload: { content: draft },
+          }),
       );
       setDraft("");
       setMentionQuery(null);
@@ -375,16 +361,17 @@ export function App() {
   const handleNewConversation = async () => {
     if (!endpoint) return;
     try {
-      const conv = await apiFetch<ApiConversation>(endpoint, "/api/v1/conversations", {
-        method: "POST",
-        body: {
-          kind: "direct",
-          title: "New conversation",
-          // Membership is what makes replies trigger: the selected bot (if
-          // any) participates, plus the human sender.
-          participants: selectedId ? [selectedId, "human"] : ["human"],
-        },
-      });
+      const conv = await apiRequest(endpoint, "/api/v1/conversations", (c) =>
+        c.conversations.createConversation({
+          payload: {
+            kind: "direct",
+            title: "New conversation",
+            // Membership is what makes replies trigger: the selected bot (if
+            // any) participates, plus the human sender.
+            participants: selectedId ? [selectedId, "human"] : ["human"],
+          },
+        }),
+      );
       await refreshConversations();
       selectConversation(conv.id);
     } catch (e) {
@@ -399,9 +386,8 @@ export function App() {
     }
     try {
       setRunHistory(
-        await apiFetch<readonly ApiRun[]>(
-          endpoint,
-          `/api/v1/bots/${encodeURIComponent(selectedId)}/runs`,
+        await apiRequest(endpoint, `/api/v1/bots/${encodeURIComponent(selectedId)}/runs`, (c) =>
+          c.bots.listBotRuns({ params: { id: selectedId } }),
         ),
       );
     } catch (e) {
@@ -417,9 +403,10 @@ export function App() {
       return;
     }
     try {
-      const all = await apiFetch<readonly ApiSchedule[]>(
+      const all = await apiRequest(
         endpoint,
         `/api/v1/schedules?botId=${encodeURIComponent(selectedId)}`,
+        (c) => c.schedules.listSchedules({ query: { botId: selectedId } }),
       );
       setSchedules([...all].sort((a, b) => b.createdAt - a.createdAt));
     } catch (e) {
@@ -434,9 +421,10 @@ export function App() {
     const id = scheduleHistory?.id;
     if (!endpoint || !id) return;
     try {
-      const occurrences = await apiFetch<readonly ApiScheduleOccurrence[]>(
+      const occurrences = await apiRequest(
         endpoint,
         `/api/v1/schedules/${encodeURIComponent(id)}/occurrences?limit=10`,
+        (c) => c.schedules.listOccurrences({ params: { id }, query: { limit: 10 } }),
       );
       setScheduleHistory({ id, occurrences });
     } catch (e) {
@@ -511,13 +499,10 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      const s = await apiFetch<{ defaultModel?: ApiModelRef | null }>(
-        endpoint,
-        "/api/v1/settings",
-        {
-          method: "PUT",
-          body: { defaultModel: selectionToApiModel(defaultModelSelection) },
-        },
+      const s = await apiRequest(endpoint, "/api/v1/settings", (c) =>
+        c.settings.putSettings({
+          payload: { defaultModel: selectionToApiModel(defaultModelSelection) },
+        }),
       );
       setDefaultModelSelection(appDefaultToSelection(s.defaultModel));
     } catch (e) {
@@ -595,14 +580,15 @@ export function App() {
       return;
     }
     try {
-      await apiFetch<ApiSchedule>(endpoint, "/api/v1/schedules", {
-        method: "POST",
-        body: {
-          botId: selectedId,
-          prompt: schedulePrompt,
-          trigger: { kind: "interval", everyMs: Math.round(minutes * 60_000) },
-        },
-      });
+      await apiRequest(endpoint, "/api/v1/schedules", (c) =>
+        c.schedules.createSchedule({
+          payload: {
+            botId: selectedId,
+            prompt: schedulePrompt,
+            trigger: { kind: "interval", everyMs: Math.round(minutes * 60_000) },
+          },
+        }),
+      );
       setSchedulePrompt("");
       await refreshSchedules();
     } catch (e) {
@@ -614,10 +600,14 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      await apiFetch<ApiSchedule>(
+      await apiRequest(
         endpoint,
         `/api/v1/schedules/${encodeURIComponent(schedule.id)}`,
-        { method: "PATCH", body: { enabled: !schedule.enabled } },
+        (c) =>
+          c.schedules.updateSchedule({
+            params: { id: schedule.id },
+            payload: { enabled: !schedule.enabled },
+          }),
       );
       setScheduleHistory(null);
       await refreshSchedules();
@@ -630,9 +620,11 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      await apiFetch(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, {
-        method: "DELETE",
-      });
+      await apiRequest(
+        endpoint,
+        `/api/v1/schedules/${encodeURIComponent(schedule.id)}`,
+        (c) => c.schedules.deleteSchedule({ params: { id: schedule.id } }),
+      );
       setScheduleHistory(null);
       await refreshSchedules();
     } catch (e) {
@@ -647,9 +639,10 @@ export function App() {
       return;
     }
     try {
-      const occurrences = await apiFetch<readonly ApiScheduleOccurrence[]>(
+      const occurrences = await apiRequest(
         endpoint,
         `/api/v1/schedules/${encodeURIComponent(schedule.id)}/occurrences?limit=10`,
+        (c) => c.schedules.listOccurrences({ params: { id: schedule.id }, query: { limit: 10 } }),
       );
       setScheduleHistory({ id: schedule.id, occurrences });
     } catch (e) {

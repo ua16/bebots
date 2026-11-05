@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type {
   Schedule,
   ScheduleId,
@@ -9,7 +9,7 @@ import {
   asBotId,
   asScheduleId,
   asScheduleOccurrenceId,
-  validateScheduleTrigger,
+  ScheduleTriggerSchema,
 } from "@bebots/domain";
 import type { ScheduleRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
@@ -49,13 +49,17 @@ function rowToSchedule(row: ScheduleRow): Schedule | null {
   } catch {
     return null;
   }
-  const validated = validateScheduleTrigger(trigger);
-  if (!validated.valid) return null;
+  let decoded: Schedule["trigger"];
+  try {
+    decoded = Schema.decodeUnknownSync(ScheduleTriggerSchema)(trigger);
+  } catch {
+    return null;
+  }
   return {
     id: asScheduleId(row.id),
     botId: asBotId(row.bot_id),
     prompt: row.prompt,
-    trigger: validated.value,
+    trigger: decoded,
     enabled: row.enabled === 1,
     conversationId: row.conversation_id ?? null,
     createdBy: row.created_by,

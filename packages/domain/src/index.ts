@@ -1,4 +1,5 @@
 export * from "./schedule.js";
+export * from "./schemas.js";
 
 export type BotId = string & { readonly __brand: "BotId" };
 
@@ -27,12 +28,15 @@ export function serializeModelRef(ref: ModelRef | null | undefined): string {
   return JSON.stringify({ providerID: ref.providerID, id: ref.id });
 }
 
+import { Schema } from "effect";
+import { ModelRefSchema } from "./schemas.js";
+
 /** Parse a persisted TEXT column back into a ModelRef. Anything invalid becomes `null`. */
 export function parseModelRef(value: string | null | undefined): ModelRef | null {
   if (!value) return null;
   try {
-    const parsed = validateModelRef(JSON.parse(value) as unknown);
-    return parsed.valid ? (parsed.value ?? null) : null;
+    const parsed = Schema.decodeUnknownSync(ModelRefSchema)(JSON.parse(value) as unknown);
+    return parsed;
   } catch {
     return null;
   }
@@ -59,14 +63,27 @@ export function validateModelRef(model: unknown): ValidatedModelRef {
   if (typeof model !== "object") {
     return { valid: false, field: "model", message: "Model must be an object" };
   }
-  const ref = model as { providerID?: unknown; id?: unknown };
-  if (typeof ref.providerID !== "string" || ref.providerID.trim().length === 0) {
-    return { valid: false, field: "model.providerID", message: "Provider id cannot be empty" };
+  try {
+    const value = Schema.decodeUnknownSync(ModelRefSchema)(model);
+    return { valid: true, value };
+  } catch (e) {
+    const issue = (e as { issue?: { _tag?: string; path?: unknown[]; issues?: unknown[] } })
+      .issue;
+    const path = Array.isArray(issue?.path) ? issue.path : [];
+    const field =
+      path[0] === "providerID"
+        ? "model.providerID"
+        : path[0] === "id"
+          ? "model.id"
+          : "model";
+    const message =
+      path[0] === "providerID"
+        ? "Provider id cannot be empty"
+        : path[0] === "id"
+          ? "Model id cannot be empty"
+          : "Model must be an object";
+    return { valid: false, field, message };
   }
-  if (typeof ref.id !== "string" || ref.id.trim().length === 0) {
-    return { valid: false, field: "model.id", message: "Model id cannot be empty" };
-  }
-  return { valid: true, value: { providerID: ref.providerID.trim(), id: ref.id.trim() } };
 }
 
 export interface Bot {

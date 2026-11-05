@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, session } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import {
   openDatabase,
   migrate,
@@ -28,26 +28,23 @@ import {
   ScheduleService,
   ActivityService,
 } from "@bebots/application";
+import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
 import type {
   BotId,
-  ModelRef,
   RunStatus,
   TaskStatus,
   ScheduleId,
-  ScheduleTrigger,
 } from "@bebots/domain";
 import {
   asBotId,
   asRunId,
-  asConversationId,
-  asTaskId,
-  asScheduleId,
-  validateModelRef,
-  validateScheduleTrigger,
 } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
+import { makeRoutes } from "@bebots/api";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
+import type { WorkspaceIndexer } from "./workspace";
+import { HttpRouter, HttpServer } from "effect/http";
 import { createMcpServer } from "./mcp";
 
 const isDev = !app.isPackaged;
@@ -61,8 +58,8 @@ if (isDev) {
 let closeDb: (() => void) | null = null;
 let closeServer: (() => void) | null = null;
 let _httpServer: ReturnType<typeof createServer> | null = null;
-let runtimeInstance: { close(): void } | null = null;
-let indexerInstance: { close(): void } | null = null;
+let runtimeInstance: (AgentRuntime & { close(): void }) | null = null;
+let indexerInstance: WorkspaceIndexer | null = null;
 let sessionSweepInterval: ReturnType<typeof setInterval> | null = null;
 let scheduleTickInterval: ReturnType<typeof setInterval> | null = null;
 let apiEndpoint: { url: string; token: string } | null = null;
@@ -85,60 +82,10 @@ function formatMcpJson(text: string): string {
   return out || "(empty)";
 }
 
-function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > 1_000_000) {
-        reject(new Error("Payload too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (raw.trim().length === 0) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw));
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-function sendJson(res: import("node:http").ServerResponse, status: number, body: unknown): void {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(body));
-}
-
 /** Scheduler tick cadence; overridable via `BEBOTS_SCHEDULE_TICK_MS` (tests). */
 function scheduleTickMs(): number {
   const raw = Number(process.env.BEBOTS_SCHEDULE_TICK_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
-}
-
-/**
- * Validate an HTTP-body model field (`{ providerID, id } | null`) against the
- * shared domain rules. `undefined` keeps the field untouched; `null` clears.
- */
-function normalizeModelInput(
-  value: unknown,
-): { readonly model?: ModelRef | null } | { readonly error: string } {
-  const validated = validateModelRef(value);
-  if (validated.valid) {
-    // `value` is not undefined here, so the normalized value is a ref or null.
-    return { model: validated.value ?? null };
-  }
-  return { error: `${validated.field}: ${validated.message}` };
 }
 
 /** Run an Effect task but never let a background routine take the app down. */
@@ -557,557 +504,54 @@ async function setupBotService(): Promise<void> {
   });
 
   // HTTP server
+  const routes = makeRoutes({
+    botService: service,
+    runService,
+    conversationService,
+    conversationSessionService,
+    conversationCoordinator,
+    taskService,
+    scheduleService,
+    activityService,
+    settingsService,
+    token,
+    runtime: runtimeInstance,
+    indexer: indexerInstance,
+    ensureBotSetup,
+  });
+  const webHandler = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
+
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
       const pathname = url.pathname;
 
-      // CORS: the renderer runs on a different origin than this API (vite dev
-      // server in dev, file:// in prod), so its fetches are cross-origin and
-      // Chromium enforces CORS — without these headers every renderer request
-      // is blocked before it reaches the routes. The API only listens on
-      // 127.0.0.1 and is bearer-token authed with no ambient credentials, so
-      // a wildcard origin is acceptable (issue #20).
+      // CORS: frozen parity, except the allow-list now admits the tracing
+      // headers Effect's HttpApiClient adds to every request (traceparent,
+      // tracestate, b3) — without them the browser rejects the preflight of
+      // every renderer-originated call (threads/models/settings never load).
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Authorization, Content-Type, traceparent, tracestate, b3",
+      );
       if (req.method === "OPTIONS") {
         res.writeHead(204);
         res.end();
         return;
       }
 
-      // Auth: allow missing token for local dev/tests, validate if present.
+      // Auth: frozen quirks.
       const auth = req.headers.authorization;
       if (auth && auth !== `Bearer ${token}` && auth !== token) {
-        sendJson(res, 401, { error: "Unauthorized" });
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: "Unauthorized" }));
         return;
       }
 
-      if (req.method === "GET" && pathname === "/health") {
-        sendJson(res, 200, { status: "ok" });
-        return;
-      }
-      if (req.method === "GET" && pathname === "/api/v1/token") {
-        sendJson(res, 200, { token });
-        return;
-      }
-
-      // Models available to the runtime (picker data). The opencode server
-      // may not be reachable yet — surface that as 503, not a 500.
-      if (req.method === "GET" && pathname === "/api/v1/models") {
-        const runtime = runtimeInstance as { listModels?(): unknown } | null;
-        if (!runtime || typeof runtime.listModels !== "function") {
-          sendJson(res, 501, { error: "Runtime does not support a model catalog" });
-          return;
-        }
-        try {
-          const models = await Effect.runPromise(
-            (runtime.listModels as () => Effect.Effect<readonly unknown[], unknown>)(),
-          );
-          sendJson(res, 200, models);
-        } catch (e) {
-          sendJson(res, 503, { error: e instanceof Error ? e.message : String(e) });
-        }
-        return;
-      }
-
-      // App settings: only the default model for now.
-      if (req.method === "GET" && pathname === "/api/v1/settings") {
-        const defaultModel = await Effect.runPromise(settingsService.getDefaultModel());
-        sendJson(res, 200, { defaultModel });
-        return;
-      }
-      if (req.method === "PUT" && pathname === "/api/v1/settings") {
-        const body = (await readBody(req)) as { defaultModel?: unknown };
-        const normalized = normalizeModelInput(body.defaultModel);
-        if ("error" in normalized) {
-          sendJson(res, 400, { error: normalized.error });
-          return;
-        }
-        // `undefined` is not valid for the default model itself — the field is
-        // required in the body (use `null` to unset the override).
-        if (!("model" in normalized)) {
-          sendJson(res, 400, { error: "defaultModel must be an object or null" });
-          return;
-        }
-        await Effect.runPromise(settingsService.setDefaultModel(normalized.model ?? null));
-        const defaultModel = await Effect.runPromise(settingsService.getDefaultModel());
-        sendJson(res, 200, { defaultModel });
-        return;
-      }
-
-      // Bots
-      if (req.method === "GET" && pathname === "/api/v1/bots") {
-        const list = await Effect.runPromise(
-          service.listBots(url.searchParams.get("includeArchived") === "true"),
-        );
-        sendJson(res, 200, list);
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/bots") {
-        const body = (await readBody(req)) as {
-          name?: string;
-          description?: string;
-          persona?: string;
-          model?: unknown;
-        };
-        const model = normalizeModelInput(body.model);
-        if ("error" in model) {
-          sendJson(res, 400, { error: model.error });
-          return;
-        }
-        const bot = await Effect.runPromise(
-          service.createBot({
-            name: body.name ?? "New bot",
-            ...(body.description !== undefined && { description: body.description }),
-            ...(body.persona !== undefined && { persona: body.persona }),
-            ...("model" in model && { model: model.model }),
-          }),
-        );
-        await ensureBotSetup(String(bot.id));
-        sendJson(res, 201, bot);
-        return;
-      }
-      const botMatch = pathname.match(/^\/api\/v1\/bots\/([^/]+)$/);
-      if (botMatch) {
-        const id = asBotId(decodeURIComponent(botMatch[1] as string));
-        if (req.method === "GET") {
-          const bot = await Effect.runPromise(service.getBot(id));
-          sendJson(res, bot ? 200 : 404, bot);
-          return;
-        }
-        if (req.method === "PATCH") {
-          const body = (await readBody(req)) as {
-            name?: string;
-            description?: string;
-            persona?: string;
-            status?: "active" | "archived";
-            model?: unknown;
-          };
-          const model = normalizeModelInput(body.model);
-          if ("error" in model) {
-            sendJson(res, 400, { error: model.error });
-            return;
-          }
-          const bot = await Effect.runPromise(
-            service.updateBot(id, {
-              ...(body.name !== undefined && { name: body.name }),
-              ...(body.description !== undefined && { description: body.description }),
-              ...(body.persona !== undefined && { persona: body.persona }),
-              ...(body.status !== undefined && { status: body.status }),
-              ...("model" in model && { model: model.model }),
-            }),
-          );
-          await ensureBotSetup(String(bot.id));
-          sendJson(res, 200, bot);
-          return;
-        }
-      }
-      const botRunsMatch = pathname.match(/^\/api\/v1\/bots\/([^/]+)\/runs$/);
-      if (botRunsMatch && req.method === "GET") {
-        const id = asBotId(decodeURIComponent(botRunsMatch[1] as string));
-        const runs = await Effect.runPromise(runService.listRuns({ botId: id }));
-        sendJson(res, 200, runs);
-        return;
-      }
-      const startRunMatch = pathname.match(/^\/api\/v1\/bots\/([^/]+)\/runs$/);
-      if (startRunMatch && req.method === "POST") {
-        const id = asBotId(decodeURIComponent(startRunMatch[1] as string));
-        const body = (await readBody(req)) as {
-          prompt?: string;
-          timeoutMs?: number;
-          sessionId?: string;
-          conversationId?: string;
-        };
-        const run = await Effect.runPromise(
-          runService.startRun({
-            botId: id,
-            prompt: body.prompt ?? "",
-            ...(body.timeoutMs !== undefined && { timeoutMs: body.timeoutMs }),
-            ...(body.sessionId !== undefined && { sessionId: body.sessionId }),
-            ...(body.conversationId !== undefined && {
-              conversationId: asConversationId(body.conversationId),
-            }),
-            triggerType: "api",
-          } as never),
-        );
-        sendJson(res, 201, run);
-        return;
-      }
-
-      const runMatch = pathname.match(/^\/api\/v1\/runs\/([^/]+)$/);
-      if (runMatch) {
-        const id = asRunId(decodeURIComponent(runMatch[1] as string));
-        if (req.method === "GET") {
-          const run = await Effect.runPromise(runService.getRun(id));
-          sendJson(res, run ? 200 : 404, run);
-          return;
-        }
-      }
-      const runEventsMatch = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/events$/);
-      if (runEventsMatch && req.method === "GET") {
-        const id = asRunId(decodeURIComponent(runEventsMatch[1] as string));
-        const events = await Effect.runPromise(runService.getRunEvents(id));
-        sendJson(res, 200, events);
-        return;
-      }
-      const cancelMatch = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/);
-      if (cancelMatch && req.method === "POST") {
-        const id = asRunId(decodeURIComponent(cancelMatch[1] as string));
-        const run = await Effect.runPromise(runService.cancelRun(id));
-        sendJson(res, run ? 200 : 404, run);
-        return;
-      }
-
-      // Conversations
-      if (req.method === "GET" && pathname === "/api/v1/conversations") {
-        const list = await Effect.runPromise(conversationService.listConversations());
-        sendJson(res, 200, list);
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/conversations") {
-        const body = (await readBody(req)) as {
-          kind?: "direct" | "team";
-          title?: string;
-          participants?: string[];
-        };
-        const conv = await Effect.runPromise(conversationService.createConversation(body ?? {}));
-        sendJson(res, 201, conv);
-        return;
-      }
-      const convMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)$/);
-      if (convMatch) {
-        const id = asConversationId(decodeURIComponent(convMatch[1] as string));
-        if (req.method === "GET") {
-          const conv = await Effect.runPromise(conversationService.getConversation(id));
-          sendJson(res, conv ? 200 : 404, conv);
-          return;
-        }
-        if (req.method === "PATCH") {
-          const body = (await readBody(req)) as {
-            kind?: "direct" | "team";
-            title?: string;
-            participants?: string[];
-          };
-          const conv = await Effect.runPromise(
-            conversationService.updateConversation(id, body ?? {}),
-          );
-          sendJson(res, 200, conv);
-          return;
-        }
-        if (req.method === "DELETE") {
-          await Effect.runPromise(conversationService.deleteConversation(id));
-          sendJson(res, 204, {});
-          return;
-        }
-      }
-      const convMsgsMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
-      if (convMsgsMatch) {
-        const id = asConversationId(decodeURIComponent(convMsgsMatch[1] as string));
-        if (req.method === "GET") {
-          const msgs = await Effect.runPromise(conversationService.listMessages(id));
-          sendJson(res, 200, msgs);
-          return;
-        }
-        if (req.method === "POST") {
-          const body = (await readBody(req)) as {
-            content?: string;
-            senderType?: string;
-          };
-          // Full reply loop (PLAN §12 M3): a human message in a bot
-          // conversation triggers a reply run; the summary lands back in the
-          // thread when the run completes.
-          const outcome = await Effect.runPromise(
-            conversationCoordinator.sendMessage({
-              conversationId: id,
-              content: body.content ?? "",
-              ...(body.senderType !== undefined && {
-                senderType: body.senderType as "human" | "bot" | "system",
-              }),
-            }),
-          );
-          sendJson(res, 201, { message: outcome.message, runId: outcome.run?.id ?? null });
-          return;
-        }
-      }
-      const convSessionsMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/sessions$/);
-      if (convSessionsMatch) {
-        const id = asConversationId(decodeURIComponent(convSessionsMatch[1] as string));
-        if (req.method === "GET") {
-          const sessions = await Effect.runPromise(
-            conversationSessionService.listSessions({ conversationId: id }),
-          );
-          sendJson(res, 200, sessions);
-          return;
-        }
-        if (req.method === "POST") {
-          const body = (await readBody(req)) as { runtimeSessionId?: string; botId?: string };
-          const sess = await Effect.runPromise(
-            conversationSessionService.createSession({
-              conversationId: id,
-              runtimeSessionId: body.runtimeSessionId ?? "",
-              ...(body.botId !== undefined && { botId: body.botId }),
-            }),
-          );
-          sendJson(res, 201, sess);
-          return;
-        }
-      }
-
-      // Tasks
-      if (req.method === "GET" && pathname === "/api/v1/tasks") {
-        const list = await Effect.runPromise(
-          taskService.listTasks({
-            ...(url.searchParams.get("requester") && {
-              requester: url.searchParams.get("requester")!,
-            }),
-            ...(url.searchParams.get("assignee") && {
-              assignee: url.searchParams.get("assignee")!,
-            }),
-            ...(url.searchParams.get("status") && {
-              status: url.searchParams.get("status") as TaskStatus,
-            }),
-            ...(url.searchParams.get("limit") && {
-              limit: Number(url.searchParams.get("limit")),
-            }),
-          }),
-        );
-        sendJson(res, 200, list);
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/tasks") {
-        const body = (await readBody(req)) as {
-          requester?: string | null;
-          assignee?: string;
-          description?: string;
-          inputRefs?: string[];
-          priority?: number;
-          deadline?: number;
-          depth?: number;
-          idempotencyKey?: string;
-          assign?: boolean;
-        };
-        const task = await Effect.runPromise(
-          taskService.createTask({
-            ...(body.requester !== undefined && { requester: body.requester }),
-            assignee: body.assignee ?? "",
-            description: body.description ?? "",
-            ...(body.inputRefs !== undefined && { inputRefs: body.inputRefs }),
-            ...(body.priority !== undefined && { priority: body.priority }),
-            ...(body.deadline !== undefined && { deadline: body.deadline }),
-            ...(body.depth !== undefined && { depth: body.depth }),
-            ...(body.idempotencyKey !== undefined && { idempotencyKey: body.idempotencyKey }),
-          }),
-        );
-        if (body.assign) {
-          const started = await Effect.runPromise(taskService.assignTask(String(task.id)));
-          sendJson(res, 201, started);
-          return;
-        }
-        sendJson(res, 201, task);
-        return;
-      }
-      const taskMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)$/);
-      if (taskMatch) {
-        const id = asTaskId(decodeURIComponent(taskMatch[1] as string));
-        if (req.method === "GET") {
-          const task = await Effect.runPromise(taskService.getTask(String(id)));
-          sendJson(res, task ? 200 : 404, task);
-          return;
-        }
-      }
-      const taskAssignMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/assign$/);
-      if (taskAssignMatch && req.method === "POST") {
-        const id = asTaskId(decodeURIComponent(taskAssignMatch[1] as string));
-        const task = await Effect.runPromise(taskService.assignTask(String(id)));
-        sendJson(res, 200, task);
-        return;
-      }
-      const taskCancelMatch = pathname.match(/^\/api\/v1\/tasks\/([^/]+)\/cancel$/);
-      if (taskCancelMatch && req.method === "POST") {
-        const id = asTaskId(decodeURIComponent(taskCancelMatch[1] as string));
-        const task = await Effect.runPromise(taskService.cancelTask(String(id)));
-        sendJson(res, 200, task);
-        return;
-      }
-      // Delegate (create+assign+run) convenience
-      if (req.method === "POST" && pathname === "/api/v1/tasks/delegate") {
-        const body = (await readBody(req)) as {
-          requester?: string | null;
-          assignee?: string;
-          description?: string;
-          assignees?: string[];
-          parallel?: boolean;
-        };
-        if (body.parallel && body.assignees) {
-          const tasks = await Effect.runPromise(
-            taskService.delegateParallel(
-              body.assignees.map((a) => ({
-                requester: body.requester ?? null,
-                assignee: a,
-                description: body.description ?? "",
-              })),
-            ),
-          );
-          sendJson(res, 201, tasks);
-          return;
-        }
-        const task = await Effect.runPromise(
-          taskService.delegate({
-            requester: body.requester ?? null,
-            assignee: body.assignee ?? "",
-            description: body.description ?? "",
-          }),
-        );
-        sendJson(res, 201, task);
-        return;
-      }
-
-      // Schedules (PLAN §9)
-      if (req.method === "GET" && pathname === "/api/v1/schedules") {
-        const list = await Effect.runPromise(
-          scheduleService.listSchedules({
-            ...(url.searchParams.get("botId") && { botId: url.searchParams.get("botId")! }),
-            ...(url.searchParams.get("createdBy") && {
-              createdBy: url.searchParams.get("createdBy")!,
-            }),
-            ...(url.searchParams.get("limit") && { limit: Number(url.searchParams.get("limit")) }),
-          }),
-        );
-        sendJson(res, 200, list);
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/schedules") {
-        const body = (await readBody(req)) as {
-          botId?: string;
-          prompt?: string;
-          trigger?: unknown;
-          enabled?: boolean;
-          conversationId?: string | null;
-          createdBy?: string | null;
-        };
-        const trigger = validateScheduleTrigger(body.trigger);
-        if (!trigger.valid) {
-          sendJson(res, 400, { error: trigger.message });
-          return;
-        }
-        if (!body.botId) {
-          sendJson(res, 400, { error: "botId is required" });
-          return;
-        }
-        try {
-          const schedule = await Effect.runPromise(
-            scheduleService.createSchedule({
-              botId: body.botId,
-              prompt: body.prompt ?? "",
-              trigger: trigger.value,
-              ...(body.enabled !== undefined && { enabled: body.enabled }),
-              ...(body.conversationId !== undefined && { conversationId: body.conversationId }),
-              ...(body.createdBy !== undefined && { createdBy: body.createdBy }),
-            }),
-          );
-          sendJson(res, 201, schedule);
-        } catch (e) {
-          sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
-        }
-        return;
-      }
-      const scheduleMatch = pathname.match(/^\/api\/v1\/schedules\/([^/]+)$/);
-      if (scheduleMatch) {
-        const id = asScheduleId(decodeURIComponent(scheduleMatch[1] as string));
-        if (req.method === "GET") {
-          const schedule = await Effect.runPromise(scheduleService.getSchedule(id));
-          sendJson(res, schedule ? 200 : 404, schedule);
-          return;
-        }
-        if (req.method === "PATCH") {
-          const body = (await readBody(req)) as {
-            prompt?: string;
-            trigger?: unknown;
-            enabled?: boolean;
-          };
-          let validatedTrigger: ScheduleTrigger | undefined;
-          if (body.trigger !== undefined) {
-            const trigger = validateScheduleTrigger(body.trigger);
-            if (!trigger.valid) {
-              sendJson(res, 400, { error: trigger.message });
-              return;
-            }
-            validatedTrigger = trigger.value;
-          }
-          try {
-            const schedule = await Effect.runPromise(
-              scheduleService.updateSchedule(id, {
-                ...(body.prompt !== undefined && { prompt: body.prompt }),
-                ...(validatedTrigger !== undefined && { trigger: validatedTrigger }),
-                ...(body.enabled !== undefined && { enabled: body.enabled }),
-              }),
-            );
-            sendJson(res, 200, schedule);
-          } catch (e) {
-            sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
-          }
-          return;
-        }
-        if (req.method === "DELETE") {
-          await Effect.runPromise(scheduleService.deleteSchedule(id));
-          sendJson(res, 204, {});
-          return;
-        }
-      }
-      const scheduleHistoryMatch = pathname.match(/^\/api\/v1\/schedules\/([^/]+)\/occurrences$/);
-      if (scheduleHistoryMatch && req.method === "GET") {
-        const id = asScheduleId(decodeURIComponent(scheduleHistoryMatch[1] as string));
-        const limitParam = url.searchParams.get("limit");
-        const history = await Effect.runPromise(
-          scheduleService.listHistory(id, limitParam ? Number(limitParam) : undefined),
-        );
-        sendJson(res, 200, history);
-        return;
-      }
-
-      // Activity feed
-      if (req.method === "GET" && pathname === "/api/v1/activity") {
-        const list = await Effect.runPromise(
-          activityService.list({
-            ...(url.searchParams.get("type") && { type: url.searchParams.get("type")! }),
-            ...(url.searchParams.get("entityType") && {
-              entityType: url.searchParams.get("entityType")!,
-            }),
-            ...(url.searchParams.get("entityId") && {
-              entityId: url.searchParams.get("entityId")!,
-            }),
-            ...(url.searchParams.get("limit") && {
-              limit: Number(url.searchParams.get("limit")),
-            }),
-          }),
-        );
-        sendJson(res, 200, list);
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/activity") {
-        const body = (await readBody(req)) as {
-          type?: string;
-          entityType?: string;
-          entityId?: string;
-          actorId?: string | null;
-          payload?: unknown;
-        };
-        const ev = await Effect.runPromise(
-          activityService.record({
-            type: body.type ?? "event",
-            entityType: body.entityType ?? "unknown",
-            entityId: body.entityId ?? "",
-            ...(body.actorId !== undefined && { actorId: body.actorId }),
-            payload: body.payload,
-          }),
-        );
-        sendJson(res, 201, ev);
-        return;
-      }
-
-      // Remote MCP endpoint (Approach B): Streamable HTTP, JSON responses.
+      // /mcp passthrough (out of scope).
       if (pathname === "/mcp") {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -1125,7 +569,7 @@ async function setupBotService(): Promise<void> {
         });
         const response = await mcpHandle!.handleRequest(request);
         res.statusCode = response.status;
-        response.headers.forEach((value, key) => res.setHeader(key, value));
+        response.headers.forEach((value: string, key: string) => res.setHeader(key, value));
         const ab = await response.arrayBuffer();
         if (showMcpLogs) {
           console.log(`[mcp] <-- ${response.status} ${pathname}`);
@@ -1135,46 +579,33 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
-      // Global pause/stop
-      if (req.method === "GET" && pathname === "/api/v1/control/status") {
-        sendJson(res, 200, { paused: runService.isPaused() });
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/control/pause") {
-        runService.pause();
-        sendJson(res, 200, { paused: true });
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/control/resume") {
-        runService.resume();
-        sendJson(res, 200, { paused: false });
-        return;
-      }
-      if (req.method === "POST" && pathname === "/api/v1/control/stop") {
-        await Effect.runPromise(runService.cancelAllRuns());
-        runService.pause();
-        sendJson(res, 200, { paused: true });
-        return;
-      }
-
-      // Workspace search over indexed notes/memory/logs (PLAN §7).
-      if (req.method === "GET" && pathname === "/api/v1/notes/search") {
-        const query = url.searchParams.get("q") ?? "";
-        if (query.trim().length === 0) {
-          sendJson(res, 400, { error: "Query parameter q is required" });
-          return;
+      // Delegate everything else to the Effect web handler.
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const buf = Buffer.concat(chunks);
+      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      let bodyBuf = buf;
+      const reqHeaders = { ...(req.headers as Record<string, string>) };
+      if (hasBody) {
+        reqHeaders["content-type"] = "application/json";
+        if (buf.length === 0) {
+          bodyBuf = Buffer.from("{}", "utf8");
         }
-        const botParam = url.searchParams.get("botId");
-        const hits = await Effect.runPromise(
-          indexer.search(query, botParam ? asBotId(botParam) : undefined),
-        );
-        sendJson(res, 200, hits);
-        return;
       }
-
-      sendJson(res, 404, { error: "Not found" });
+      const request = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
+        method: req.method ?? "GET",
+        headers: reqHeaders,
+        ...(hasBody ? { body: bodyBuf } : {}),
+      });
+      const response = await webHandler.handler(request);
+      res.statusCode = response.status;
+      response.headers.forEach((value: string, key: string) => res.setHeader(key, value));
+      const ab = await response.arrayBuffer();
+      res.end(Buffer.from(ab));
     } catch (e) {
-      sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
     }
   });
 

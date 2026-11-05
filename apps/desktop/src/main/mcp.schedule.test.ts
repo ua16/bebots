@@ -1,16 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-type McpRpcBody = {
-  result?: {
-    tools?: { name: string }[];
-    content?: { type: string; text: string }[];
-    isError?: boolean;
-  };
-  error?: { message: string };
-};
+import {
+  api as sharedApi,
+  bootTestApp,
+  createBot as createBotViaApi,
+  mcpRpc,
+  toolPayload,
+  type BootedApp,
+} from "./test-boot";
 
 type ScheduleTriggerPayload =
   | { kind: "interval"; everyMs: number }
@@ -56,81 +52,35 @@ vi.mock("@bebots/runtime-opencode", async () => {
 });
 
 describe("MCP schedule tools (live app boot)", () => {
-  let dir: string;
-  let base: string;
-  let token: string;
+  let app: BootedApp;
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), "bebots-mcp-schedule-"));
-    vi.resetModules();
-    // Fast scheduler ticks so fired schedules execute within the test.
-    process.env.BEBOTS_SCHEDULE_TICK_MS = "150";
-    process.env.ELECTRON_RENDERER_URL = "http://localhost:5173";
-    const ipcMain = { handle: vi.fn() };
-    const BrowserWindow = vi.fn().mockImplementation(() => ({
-      on: vi.fn(),
-      loadURL: vi.fn(),
-      loadFile: vi.fn(),
-      show: vi.fn(),
-    }));
-    const winCtor = BrowserWindow as unknown as { getAllWindows?: () => unknown[] };
-    winCtor.getAllWindows = vi.fn(() => []);
-    vi.doMock("electron", () => ({
-      app: {
-        isPackaged: false,
-        getPath: () => dir,
-        whenReady: () => Promise.resolve(),
-        on: vi.fn(),
-        quit: vi.fn(),
-        commandLine: { appendSwitch: vi.fn() },
+    app = await bootTestApp({
+      tmpPrefix: "bebots-mcp-schedule-",
+      // Fast scheduler ticks so fired schedules execute within the test.
+      env: {
+        BEBOTS_SCHEDULE_TICK_MS: "150",
+        ELECTRON_RENDERER_URL: "http://localhost:5173",
       },
-      BrowserWindow,
-      ipcMain,
-      session: { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } },
-    }));
-    await import("./index.js");
-    await new Promise((r) => setTimeout(r, 300));
-    const fs = await import("node:fs");
-    const port = fs.readFileSync(join(dir, "api-port.txt"), "utf8").trim();
-    base = `http://127.0.0.1:${port}`;
-    token = fs.readFileSync(join(dir, "api-token.txt"), "utf8").trim();
+    });
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    app.dispose();
   });
 
-  async function api(method: string, path: string, body?: unknown) {
-    const res = await fetch(`${base}${path}`, {
-      method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      ...(body !== undefined && { body: JSON.stringify(body) }),
-    });
-    return { status: res.status, body: (await res.json()) as unknown };
+  function api(method: string, path: string, body?: unknown) {
+    return sharedApi(app, method, path, body);
   }
 
-  async function rpc(method: string, params: Record<string, unknown>, id: number, botId: string) {
-    const res = await fetch(`${base}/mcp`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        Authorization: `Bearer ${token}`,
-        "X-Bebots-Bot-Id": botId,
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    });
-    return (await res.json()) as McpRpcBody;
+  function rpc(method: string, params: Record<string, unknown>, id: number, botId: string) {
+    return mcpRpc(app, method, params, id, { "X-Bebots-Bot-Id": botId }).then(
+      (result) => result.body,
+    );
   }
 
-  function toolPayload<T>(response: McpRpcBody): T {
-    const text = response.result?.content?.[0]?.text ?? "";
-    return JSON.parse(text) as T;
-  }
-
-  async function createBot(name: string): Promise<{ id: string }> {
-    const res = await api("POST", "/api/v1/bots", { name });
-    return res.body as { id: string };
+  function createBot(name: string): Promise<{ id: string }> {
+    return createBotViaApi(app, name);
   }
 
   it("schedule_run/list_schedules/cancel_schedule work end to end", async () => {

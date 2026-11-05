@@ -9,7 +9,9 @@
  * - `cron`: fire per a 5-field cron expression resolved in an explicit
  *   IANA timezone (PLAN: "cron-like schedule with an explicit timezone").
  */
+import { Schema } from "effect";
 import type { BotId, ConversationId, RunId } from "./index.js";
+import { ScheduleTriggerSchema } from "./schemas.js";
 
 export type ScheduleId = string & { readonly __brand: "ScheduleId" };
 
@@ -91,54 +93,13 @@ export function validateScheduleTrigger(
 ):
   | { readonly valid: true; readonly value: ScheduleTrigger }
   | { readonly valid: false; readonly message: string } {
-  if (typeof trigger !== "object" || trigger === null) {
-    return { valid: false, message: "Trigger must be an object" };
+  try {
+    const value = Schema.decodeUnknownSync(ScheduleTriggerSchema)(trigger);
+    return { valid: true, value };
+  } catch (e) {
+    const err = e as { message?: string };
+    return { valid: false, message: err.message ?? "Invalid trigger" };
   }
-  const t = trigger as {
-    kind?: unknown;
-    everyMs?: unknown;
-    at?: unknown;
-    expression?: unknown;
-    timezone?: unknown;
-  };
-  if (t.kind === "interval") {
-    if (typeof t.everyMs !== "number" || !Number.isFinite(t.everyMs) || t.everyMs <= 0) {
-      return { valid: false, message: "Trigger everyMs must be a positive number" };
-    }
-    if (t.everyMs < MIN_INTERVAL_MS) {
-      return { valid: false, message: "Trigger everyMs is below the minimum interval" };
-    }
-    return { valid: true, value: { kind: "interval", everyMs: Math.floor(t.everyMs) } };
-  }
-  if (t.kind === "once") {
-    if (typeof t.at !== "number" || !Number.isFinite(t.at)) {
-      return { valid: false, message: "Trigger at must be an epoch-milliseconds number" };
-    }
-    return { valid: true, value: { kind: "once", at: Math.floor(t.at) } };
-  }
-  if (t.kind === "cron") {
-    if (typeof t.expression !== "string" || t.expression.trim().length === 0) {
-      return { valid: false, message: "Trigger expression must be a non-empty string" };
-    }
-    const expr = t.expression.trim();
-    if (parseCronFields(expr) === null) {
-      return { valid: false, message: "Trigger expression is not a valid 5-field cron expression" };
-    }
-    if (typeof t.timezone !== "string" || t.timezone.trim().length === 0) {
-      return { valid: false, message: "Trigger timezone must be an IANA timezone name" };
-    }
-    const timezone = t.timezone.trim();
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: timezone }); // throws on unknown timezones
-    } catch {
-      return { valid: false, message: "Trigger timezone is not a valid IANA timezone" };
-    }
-    return {
-      valid: true,
-      value: { kind: "cron", expression: expr, timezone: timezone },
-    };
-  }
-  return { valid: false, message: "Trigger kind must be one of interval, once, cron" };
 }
 
 /**
