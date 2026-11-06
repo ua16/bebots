@@ -57,7 +57,6 @@ if (isDev) {
 
 let closeDb: (() => void) | null = null;
 let closeServer: (() => void) | null = null;
-let _httpServer: ReturnType<typeof createServer> | null = null;
 let runtimeInstance: (AgentRuntime & { close(): void }) | null = null;
 let indexerInstance: WorkspaceIndexer | null = null;
 let sessionSweepInterval: ReturnType<typeof setInterval> | null = null;
@@ -614,7 +613,6 @@ async function setupBotService(): Promise<void> {
   });
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
-  _httpServer = server;
   closeServer = () => server.close();
   apiPort = port;
   apiEndpoint = { url: `http://127.0.0.1:${port}`, token };

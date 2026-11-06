@@ -31,7 +31,6 @@ export class FakeRuntime {
 }
 
 // The part of the `@bebots/runtime-opencode` module surface the app imports
-// (constructor, adapter alias, factory) — mirrors the pre-dedupe inline mocks.
+// (constructor, factory).
 export const OpenCodeRuntime = FakeRuntime;
-export const OpenCodeAdapter = FakeRuntime;
 export const createOpenCodeRuntime = () => new FakeRuntime();

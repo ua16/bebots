@@ -162,8 +162,6 @@ export class SqliteMessageRepository implements MessageRepository {
     });
   }
 }
-
 export function createSqliteMessageRepository(db: SqliteDatabase): MessageRepository {
   return new SqliteMessageRepository(db);
 }
-export const createMessageRepository = createSqliteMessageRepository;

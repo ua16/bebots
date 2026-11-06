@@ -31,10 +31,6 @@ export function asScheduleOccurrenceId(value: string): ScheduleOccurrenceId {
   return value as ScheduleOccurrenceId;
 }
 
-export const SCHEDULE_TRIGGER_KINDS = ["interval", "once", "cron"] as const;
-
-export type ScheduleTriggerKind = (typeof SCHEDULE_TRIGGER_KINDS)[number];
-
 export type ScheduleTrigger =
   | { readonly kind: "interval"; readonly everyMs: number }
   | { readonly kind: "once"; readonly at: number }

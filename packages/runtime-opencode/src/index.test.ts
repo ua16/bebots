@@ -7,7 +7,7 @@ import type { RunHandle, RuntimeEvent } from "@bebots/application";
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 import { spawn } from "node:child_process";
-import { OpenCodeRuntime, createOpenCodeRuntime, OpenCodeAdapter } from "./index";
+import { OpenCodeRuntime, createOpenCodeRuntime } from "./index";
 
 interface FakeProcess extends EventEmitter {
   stdout: EventEmitter;
@@ -374,8 +374,7 @@ describe("OpenCodeRuntime", () => {
     runtime.close();
   });
 
-  it("exposes the factory and compatibility alias", () => {
-    expect(OpenCodeAdapter).toBe(OpenCodeRuntime);
+  it("exposes the factory", () => {
     const runtime = createOpenCodeRuntime({ command: "echo", baseDirectory: "/x" });
     expect(runtime).toBeInstanceOf(OpenCodeRuntime);
     expect(runtime.id).toBe("opencode");

@@ -135,5 +135,3 @@ export class SqliteBotRepository implements BotRepository {
 export function createSqliteBotRepository(db: SqliteDatabase): BotRepository {
   return new SqliteBotRepository(db);
 }
-
-export const createBotRepository = createSqliteBotRepository;

@@ -521,6 +521,3 @@ export class OpenCodeRuntime implements AgentRuntime {
 export function createOpenCodeRuntime(options?: OpenCodeRuntimeOptions): OpenCodeRuntime {
   return new OpenCodeRuntime(options);
 }
-
-// Aliases for compatibility
-export const OpenCodeAdapter = OpenCodeRuntime;

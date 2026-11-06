@@ -16,18 +16,6 @@ export interface BebotsBot {
   readonly updatedAt: number;
 }
 
-export interface BebotsModel {
-  readonly providerID: string;
-  readonly id: string;
-  readonly name: string;
-  readonly enabled: boolean;
-  readonly status?: "alpha" | "beta" | "deprecated" | "active";
-}
-
-export interface BebotsSettings {
-  readonly defaultModel?: BebotsModelRef | null;
-}
-
 export interface BebotsPreloadApi {
   readonly platform: string;
   readonly versions: {

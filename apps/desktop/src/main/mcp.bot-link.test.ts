@@ -51,7 +51,6 @@ vi.mock("@bebots/runtime-opencode", async () => {
   return {
     OpenCodeRuntime: FakeRuntime,
     createOpenCodeRuntime: () => new FakeRuntime(),
-    OpenCodeAdapter: FakeRuntime,
   };
 });
 
