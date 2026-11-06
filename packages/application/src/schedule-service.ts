@@ -192,7 +192,9 @@ export class ScheduleService implements ScheduleResultRecorder {
       try {
         trigger = Schema.decodeUnknownSync(ScheduleTriggerSchema)(input.trigger);
       } catch (e) {
-        return yield* Effect.fail(new ValidationError("trigger", (e as { message?: string }).message ?? "Invalid trigger"));
+        return yield* Effect.fail(
+          new ValidationError("trigger", (e as { message?: string }).message ?? "Invalid trigger"),
+        );
       }
       // A `once` trigger in the past can never fire — reject rather than lie.
       if (trigger.kind === "once" && trigger.at <= clock.now()) {
@@ -261,7 +263,12 @@ export class ScheduleService implements ScheduleResultRecorder {
         try {
           decoded = Schema.decodeUnknownSync(ScheduleTriggerSchema)(patch.trigger);
         } catch (e) {
-          return yield* Effect.fail(new ValidationError("trigger", (e as { message?: string }).message ?? "Invalid trigger"));
+          return yield* Effect.fail(
+            new ValidationError(
+              "trigger",
+              (e as { message?: string }).message ?? "Invalid trigger",
+            ),
+          );
         }
         trigger = decoded;
         if (trigger.kind === "once" && trigger.at <= clock.now()) {

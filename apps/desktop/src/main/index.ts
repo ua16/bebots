@@ -30,16 +30,8 @@ import {
 } from "@bebots/application";
 import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
-import type {
-  BotId,
-  RunStatus,
-  TaskStatus,
-  ScheduleId,
-} from "@bebots/domain";
-import {
-  asBotId,
-  asRunId,
-} from "@bebots/domain";
+import type { BotId, RunStatus, TaskStatus, ScheduleId } from "@bebots/domain";
+import { asBotId, asRunId } from "@bebots/domain";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { makeRoutes } from "@bebots/api";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";

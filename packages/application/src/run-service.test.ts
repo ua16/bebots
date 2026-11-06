@@ -138,17 +138,11 @@ describe("RunService", () => {
     });
 
     // Bot override wins over the app default.
-    await Effect.runPromise(
-      service.startRun({ botId: asBotId("bot-override"), prompt: "hi" }),
-    );
+    await Effect.runPromise(service.startRun({ botId: asBotId("bot-override"), prompt: "hi" }));
     // No bot override → the app default applies.
-    await Effect.runPromise(
-      service.startRun({ botId: asBotId("bot-plain"), prompt: "hi" }),
-    );
+    await Effect.runPromise(service.startRun({ botId: asBotId("bot-plain"), prompt: "hi" }));
     // Bot without an override still beats the default with its own model.
-    await Effect.runPromise(
-      service.startRun({ botId: asBotId("bot-own-model"), prompt: "hi" }),
-    );
+    await Effect.runPromise(service.startRun({ botId: asBotId("bot-own-model"), prompt: "hi" }));
 
     // Without a settings store and without a bot override, no model is sent.
     const serviceNoSettings = new RunService({ runRepo, botRepo, workspace, runtime, clock, ids });
@@ -937,10 +931,9 @@ describe("RunService session scoping", () => {
     // And the stored sessions are attributed per bot.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const stored = await Effect.runPromise(sessions.listSessions({ conversationId: conv }));
-    expect(
-      [...stored]
-        .map((s) => `${s.botId ?? null}:${s.runtimeSessionId}`)
-        .sort(),
-    ).toEqual(["bot-1:sess-bot-1", "bot-2:sess-bot-2"]);
+    expect([...stored].map((s) => `${s.botId ?? null}:${s.runtimeSessionId}`).sort()).toEqual([
+      "bot-1:sess-bot-1",
+      "bot-2:sess-bot-2",
+    ]);
   });
 });

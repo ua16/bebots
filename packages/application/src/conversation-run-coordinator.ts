@@ -185,7 +185,6 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     return pin !== undefined && pin.conversationId === conversationId;
   }
 
-
   /**
    * Persist the message and, for human messages, trigger the participant
    * bot's reply run. Only human messages trigger (loop prevention at the
@@ -213,7 +212,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       const runs = yield* self.processPersistedMessage(conversation, message, senderType, senderId);
 
       return { message, run: runs[0] ?? null, runs };
-    }) as Effect.Effect<SendMessageResult, NotFoundError | ValidationError | RepositoryError | ServiceError>;
+    }) as Effect.Effect<
+      SendMessageResult,
+      NotFoundError | ValidationError | RepositoryError | ServiceError
+    >;
   }
 
   /**
@@ -225,7 +227,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     message: Message,
     senderType: MessageSenderType,
     senderId: string | null,
-  ): Effect.Effect<readonly Run[], NotFoundError | ValidationError | RepositoryError | ServiceError> {
+  ): Effect.Effect<
+    readonly Run[],
+    NotFoundError | ValidationError | RepositoryError | ServiceError
+  > {
     const runService = this.runService;
     const botRepo = this.botRepo;
     const self = this;
@@ -239,8 +244,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         // the cheapest place to sweep expired bot-link pins as a safety net.
         self.pruneExpiredBotLinks();
       }
-      const canPropagate =
-        senderType !== "system" && currentHops < MAX_MESSAGE_HOP_DEPTH;
+      const canPropagate = senderType !== "system" && currentHops < MAX_MESSAGE_HOP_DEPTH;
 
       // Resolve recipient bots.
       const recipients = new Map<string, { id: string; name: string }>();
@@ -288,7 +292,9 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         for (const participant of conversation.participants) {
           const raw = participant.trim();
           if (raw.length === 0) continue;
-          const bot = yield* botRepo.findById(asBotId(raw)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+          const bot = yield* botRepo
+            .findById(asBotId(raw))
+            .pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
           if (bot && bot.status === "active") {
             recipients.set(String(bot.id), { id: String(bot.id), name: bot.name });
             break; // only first, matching M3
@@ -301,7 +307,9 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         for (const participant of conversation.participants) {
           const raw = participant.trim();
           if (raw.length === 0) continue;
-          const bot = yield* botRepo.findById(asBotId(raw)).pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
+          const bot = yield* botRepo
+            .findById(asBotId(raw))
+            .pipe(Effect.catchCause((_cause) => Effect.succeed(null)));
           if (bot && bot.status === "active" && String(bot.id) !== senderId) {
             if (self.suppressBotLinkCaller(String(bot.id), senderId, String(conversation.id))) {
               continue;
@@ -334,18 +342,25 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
           .pipe(
             Effect.catchCause((cause) => {
               void Effect.runPromise(
-                Effect.logError("Conversation reply run failed to start", message.id, Cause.squash(cause)),
+                Effect.logError(
+                  "Conversation reply run failed to start",
+                  message.id,
+                  Cause.squash(cause),
+                ),
               );
               return Effect.succeed(null as Run | null);
             }),
           );
 
-      const runs = (yield* Effect.all(recipientList.map(startOne), { concurrency: "unbounded" })).filter(
-        (r): r is Run => r !== null,
-      );
+      const runs = (yield* Effect.all(recipientList.map(startOne), {
+        concurrency: "unbounded",
+      })).filter((r): r is Run => r !== null);
 
       return runs as readonly Run[];
-    }) as Effect.Effect<readonly Run[], NotFoundError | ValidationError | RepositoryError | ServiceError>;
+    }) as Effect.Effect<
+      readonly Run[],
+      NotFoundError | ValidationError | RepositoryError | ServiceError
+    >;
   }
 
   /**
@@ -375,9 +390,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       self.releaseBotLinks(botId);
       // Propagation failures are ignored: the reply itself is already stored,
       // and delivery must not depend on the relay hop.
-      yield* self
-        .triggerForMessage(conversationId, message, "bot", botId)
-        .pipe(Effect.ignore);
+      yield* self.triggerForMessage(conversationId, message, "bot", botId).pipe(Effect.ignore);
     });
   }
 

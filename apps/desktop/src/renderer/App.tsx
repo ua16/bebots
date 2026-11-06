@@ -600,14 +600,11 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      await apiRequest(
-        endpoint,
-        `/api/v1/schedules/${encodeURIComponent(schedule.id)}`,
-        (c) =>
-          c.schedules.updateSchedule({
-            params: { id: schedule.id },
-            payload: { enabled: !schedule.enabled },
-          }),
+      await apiRequest(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, (c) =>
+        c.schedules.updateSchedule({
+          params: { id: schedule.id },
+          payload: { enabled: !schedule.enabled },
+        }),
       );
       setScheduleHistory(null);
       await refreshSchedules();
@@ -620,10 +617,8 @@ export function App() {
     if (!endpoint) return;
     setError(null);
     try {
-      await apiRequest(
-        endpoint,
-        `/api/v1/schedules/${encodeURIComponent(schedule.id)}`,
-        (c) => c.schedules.deleteSchedule({ params: { id: schedule.id } }),
+      await apiRequest(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, (c) =>
+        c.schedules.deleteSchedule({ params: { id: schedule.id } }),
       );
       setScheduleHistory(null);
       await refreshSchedules();
@@ -757,10 +752,7 @@ export function App() {
               {modelGroups.map(([provider, items]) => (
                 <optgroup key={provider} label={provider}>
                   {items.map((m) => (
-                    <option
-                      key={`${m.providerID}/${m.id}`}
-                      value={modelToSelectValue(m)}
-                    >
+                    <option key={`${m.providerID}/${m.id}`} value={modelToSelectValue(m)}>
                       {m.name}
                     </option>
                   ))}
@@ -1002,10 +994,7 @@ export function App() {
                   {modelGroups.map(([provider, items]) => (
                     <optgroup key={provider} label={provider}>
                       {items.map((m) => (
-                        <option
-                          key={`${m.providerID}/${m.id}`}
-                          value={modelToSelectValue(m)}
-                        >
+                        <option key={`${m.providerID}/${m.id}`} value={modelToSelectValue(m)}>
                           {m.name}
                         </option>
                       ))}

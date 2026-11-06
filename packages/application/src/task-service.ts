@@ -68,11 +68,7 @@ export class TaskService implements TaskResultRecorder {
       const existing = yield* taskRepo.findById(asTaskId(taskId));
       if (!existing) return;
       const nextStatus: TaskStatus =
-        status === "succeeded"
-          ? "succeeded"
-          : status === "cancelled"
-            ? "cancelled"
-            : "failed";
+        status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : "failed";
       if (!canTransitionTask(existing.status, nextStatus)) return;
       const updated: Task = {
         ...existing,
@@ -96,7 +92,9 @@ export class TaskService implements TaskResultRecorder {
     return Effect.gen(function* () {
       const description = (input.description ?? "").trim();
       if (description.length === 0) {
-        return yield* Effect.fail(new ValidationError("description", "Task description cannot be empty"));
+        return yield* Effect.fail(
+          new ValidationError("description", "Task description cannot be empty"),
+        );
       }
       const assignee = (input.assignee ?? "").trim();
       if (assignee.length === 0) {
@@ -202,7 +200,9 @@ export class TaskService implements TaskResultRecorder {
   }
 
   /** Create and immediately assign+start. Convenience for simple delegation. */
-  delegate(input: CreateTaskInput): Effect.Effect<Task, ValidationError | NotFoundError | RepositoryError | ServiceError> {
+  delegate(
+    input: CreateTaskInput,
+  ): Effect.Effect<Task, ValidationError | NotFoundError | RepositoryError | ServiceError> {
     const createTask = this.createTask.bind(this);
     const assignTask = this.assignTask.bind(this);
     return Effect.gen(function* () {
@@ -215,19 +215,27 @@ export class TaskService implements TaskResultRecorder {
   /** Delegate to multiple assignees in parallel. */
   delegateParallel(
     inputs: readonly CreateTaskInput[],
-  ): Effect.Effect<readonly Task[], ValidationError | NotFoundError | RepositoryError | ServiceError> {
+  ): Effect.Effect<
+    readonly Task[],
+    ValidationError | NotFoundError | RepositoryError | ServiceError
+  > {
     const maxParallel = this.maxParallel;
     const delegate = this.delegate.bind(this);
     if (inputs.length > maxParallel) {
       return Effect.fail(new ServiceError("Parallel delegation limit exceeded"));
     }
-    return Effect.all(inputs.map((i) => delegate(i)), { concurrency: "unbounded" }) as Effect.Effect<
+    return Effect.all(
+      inputs.map((i) => delegate(i)),
+      { concurrency: "unbounded" },
+    ) as Effect.Effect<
       readonly Task[],
       ValidationError | NotFoundError | RepositoryError | ServiceError
     >;
   }
 
-  cancelTask(id: string): Effect.Effect<Task | null, RepositoryError | NotFoundError | ServiceError> {
+  cancelTask(
+    id: string,
+  ): Effect.Effect<Task | null, RepositoryError | NotFoundError | ServiceError> {
     const taskRepo = this.taskRepo;
     const runService = this.runService;
     const clock = this.clock;
@@ -249,4 +257,3 @@ export class TaskService implements TaskResultRecorder {
     }) as Effect.Effect<Task | null, RepositoryError | NotFoundError | ServiceError>;
   }
 }
-

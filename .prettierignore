@@ -1,0 +1,9 @@
+# Generated / vendored output — never formatted.
+node_modules/
+dist/
+out/
+.vite/
+coverage/
+*.tsbuildinfo
+*.log
+.DS_Store

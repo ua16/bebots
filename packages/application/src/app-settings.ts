@@ -18,17 +18,13 @@ export class AppSettingsService {
     return Effect.map(this.repo.get(DEFAULT_MODEL_KEY), (raw) => parseModelRef(raw));
   }
 
-  setDefaultModel(
-    model: ModelRef | null,
-  ): Effect.Effect<void, RepositoryError | ValidationError> {
+  setDefaultModel(model: ModelRef | null): Effect.Effect<void, RepositoryError | ValidationError> {
     let validated: ModelRef | null;
     try {
       validated = Schema.decodeUnknownSync(ModelRefPatchSchema)(model) ?? null;
     } catch {
       return Effect.fail(new ValidationError("model", "Invalid model reference"));
     }
-    return Effect.asVoid(
-      this.repo.set(DEFAULT_MODEL_KEY, serializeModelRef(validated)),
-    );
+    return Effect.asVoid(this.repo.set(DEFAULT_MODEL_KEY, serializeModelRef(validated)));
   }
 }

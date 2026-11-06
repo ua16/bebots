@@ -267,9 +267,7 @@ describe("ConversationRunCoordinator", () => {
 describe("ConversationRunCoordinator.recordBotReply", () => {
   it("persists the run summary as a bot reply from the run's bot", async () => {
     const env = makeEnv([], makeRuntime());
-    await Effect.runPromise(
-      env.coordinator.recordBotReply(conversationId, "bot-1", "the answer"),
-    );
+    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-1", "the answer"));
     const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
     expect(thread).toHaveLength(1);
     expect(thread[0]?.senderType).toBe("bot");
@@ -296,7 +294,10 @@ describe("duplicate reply runs", () => {
     const runtime = makeRuntime({
       startRun: (request: RunRequest) => {
         started.push(request);
-        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+        return Effect.succeed({
+          runId: `rt-${started.length}`,
+          sessionId: "sess-1",
+        } satisfies RunHandle);
       },
     });
     const fixedClock: Clock = { now: () => 1_000 };
@@ -315,7 +316,11 @@ describe("duplicate reply runs", () => {
       clock: fixedClock,
       ids,
     });
-    const coordinator = new ConversationRunCoordinator({ conversationService, runService, botRepo: twoBotRepo });
+    const coordinator = new ConversationRunCoordinator({
+      conversationService,
+      runService,
+      botRepo: twoBotRepo,
+    });
 
     const created = await Effect.runPromise(
       conversationService.createConversation({ title: "thread", participants: ["bot-1", "human"] }),
@@ -343,7 +348,15 @@ describe("duplicate reply runs", () => {
 
 describe("bot-to-bot send_message continuity (bot-link pins)", () => {
   function makeNamedBot(id: string, name: string): Bot {
-    return { id: asBotId(id), name, description: "", persona: "", status: "active", createdAt: 1, updatedAt: 1 };
+    return {
+      id: asBotId(id),
+      name,
+      description: "",
+      persona: "",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+    };
   }
 
   function makeBotLedger(bots: readonly Bot[]): BotRepository {
@@ -366,7 +379,9 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
   const bot3 = makeNamedBot("bot-3", "Bot Three");
 
   async function pin(env: TestEnv, callerBotId: string, targetBotId: string): Promise<string> {
-    return Effect.runPromise(env.coordinator.resolveBotLinkConversation({ callerBotId, targetBotId }));
+    return Effect.runPromise(
+      env.coordinator.resolveBotLinkConversation({ callerBotId, targetBotId }),
+    );
   }
 
   it("routes a caller's repeated sends to one bot through the same pinned conversation", async () => {
@@ -385,11 +400,18 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
 
     // An explicit conversation id always wins.
     await Effect.runPromise(
-      env.conversationService.createConversation({ title: "explicit", participants: ["bot-1", "bot-2"] }),
+      env.conversationService.createConversation({
+        title: "explicit",
+        participants: ["bot-1", "bot-2"],
+      }),
     );
     const provided = "id-explicit";
     const explicit = await Effect.runPromise(
-      env.coordinator.resolveBotLinkConversation({ callerBotId: "bot-1", targetBotId: "bot-2", conversationId: provided }),
+      env.coordinator.resolveBotLinkConversation({
+        callerBotId: "bot-1",
+        targetBotId: "bot-2",
+        conversationId: provided,
+      }),
     );
     expect(explicit).toBe(provided);
   });
@@ -399,7 +421,10 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     const runtime = makeRuntime({
       startRun: (request: RunRequest) => {
         started.push(request);
-        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+        return Effect.succeed({
+          runId: `rt-${started.length}`,
+          sessionId: "sess-1",
+        } satisfies RunHandle);
       },
     });
     const env = makeEnv(["bot-1", "bot-2"], runtime, {
@@ -409,10 +434,20 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     const conversationId = await pin(env, "bot-1", "bot-2");
 
     await Effect.runPromise(
-      env.coordinator.sendMessage({ conversationId, content: "hello", senderType: "bot", senderId: "bot-1" }),
+      env.coordinator.sendMessage({
+        conversationId,
+        content: "hello",
+        senderType: "bot",
+        senderId: "bot-1",
+      }),
     );
     await Effect.runPromise(
-      env.coordinator.sendMessage({ conversationId, content: "follow-up?", senderType: "bot", senderId: "bot-1" }),
+      env.coordinator.sendMessage({
+        conversationId,
+        content: "follow-up?",
+        senderType: "bot",
+        senderId: "bot-1",
+      }),
     );
 
     expect(started).toHaveLength(2);
@@ -434,7 +469,9 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     const pinned = await pin(env, "bot-1", "bot-2");
     const bot2Pin = await pin(env, "bot-2", "bot-1");
 
-    await Effect.runPromise(env.coordinator.recordBotReply(pinned, "bot-1", "the answer for the user"));
+    await Effect.runPromise(
+      env.coordinator.recordBotReply(pinned, "bot-1", "the answer for the user"),
+    );
 
     const repinned = await pin(env, "bot-1", "bot-2");
     expect(repinned).not.toBe(pinned);
@@ -460,7 +497,10 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     const runtime = makeRuntime({
       startRun: (request: RunRequest) => {
         started.push(request);
-        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+        return Effect.succeed({
+          runId: `rt-${started.length}`,
+          sessionId: "sess-1",
+        } satisfies RunHandle);
       },
     });
     const env = makeEnv(["bot-1", "bot-2"], runtime, {
@@ -469,7 +509,9 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     });
     const conversationId = await pin(env, "bot-1", "bot-2");
 
-    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-2", "worked on it"));
+    await Effect.runPromise(
+      env.coordinator.recordBotReply(conversationId, "bot-2", "worked on it"),
+    );
 
     // bot-1 (the pinned caller) receives the reply synchronously via
     // send_message; propagating it would only re-trigger bot-1 redundantly.
@@ -484,7 +526,10 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     const runtime = makeRuntime({
       startRun: (request: RunRequest) => {
         started.push(request);
-        return Effect.succeed({ runId: `rt-${started.length}`, sessionId: "sess-1" } satisfies RunHandle);
+        return Effect.succeed({
+          runId: `rt-${started.length}`,
+          sessionId: "sess-1",
+        } satisfies RunHandle);
       },
     });
     const env = makeEnv(["bot-1", "bot-2"], runtime, {
@@ -493,7 +538,9 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
     });
     const conversationId = await pin(env, "bot-1", "bot-2");
 
-    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-2", "asking @bot-3"));
+    await Effect.runPromise(
+      env.coordinator.recordBotReply(conversationId, "bot-2", "asking @bot-3"),
+    );
 
     expect(started.map((r) => String(r.botId))).toEqual(["bot-3"]);
   });

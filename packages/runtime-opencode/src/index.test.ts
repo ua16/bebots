@@ -558,7 +558,9 @@ describe("OpenCodeRuntime", () => {
 
   it("does not switch the model when no model is requested", async () => {
     announceServer(proc);
-    const { fn: fetchMock, calls } = makeFetch(happyHandler([{ type: "idle", outcome: "succeeded" }]));
+    const { fn: fetchMock, calls } = makeFetch(
+      happyHandler([{ type: "idle", outcome: "succeeded" }]),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -602,7 +604,14 @@ describe("OpenCodeRuntime", () => {
           location: { directory: "/tmp" },
           data: [
             { id: "m1", modelID: "m1", providerID: "p1", name: "Model One", enabled: true },
-            { id: "m2", modelID: "m2", providerID: "p2", name: "Model Two", enabled: true, status: "beta" },
+            {
+              id: "m2",
+              modelID: "m2",
+              providerID: "p2",
+              name: "Model Two",
+              enabled: true,
+              status: "beta",
+            },
             { id: "m3", modelID: "m3", providerID: "p3", name: "", enabled: false },
           ],
         });

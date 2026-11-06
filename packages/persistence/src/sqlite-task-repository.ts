@@ -87,7 +87,8 @@ export class SqliteTaskRepository implements TaskRepository {
     const db = this.db;
     return Effect.try({
       try: () => {
-        const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(String(id)) as TaskRow | undefined;
+        const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(String(id)) as
+          TaskRow | undefined;
         return row ? rowToTask(row) : null;
       },
       catch: (cause) => new RepositoryError("Failed to find task", cause),
@@ -174,7 +175,8 @@ export class SqliteTaskRepository implements TaskRepository {
     const db = this.db;
     return Effect.try({
       try: () => {
-        const row = db.prepare("SELECT * FROM tasks WHERE idempotency_key = ?").get(key) as TaskRow | undefined;
+        const row = db.prepare("SELECT * FROM tasks WHERE idempotency_key = ?").get(key) as
+          TaskRow | undefined;
         return row ? rowToTask(row) : null;
       },
       catch: (cause) => new RepositoryError("Failed to find task by idempotency key", cause),

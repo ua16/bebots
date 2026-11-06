@@ -226,12 +226,9 @@ export class OpenCodeRuntime implements AgentRuntime {
         const requestedModel = request.model;
         if (requestedModel) {
           try {
-            await self.request(
-              server,
-              "POST",
-              `/api/session/${sessionId}/model`,
-              { model: { id: requestedModel.id, providerID: requestedModel.providerID } },
-            );
+            await self.request(server, "POST", `/api/session/${sessionId}/model`, {
+              model: { id: requestedModel.id, providerID: requestedModel.providerID },
+            });
           } catch (e) {
             state.events.push({
               _tag: "progress",
@@ -293,8 +290,7 @@ export class OpenCodeRuntime implements AgentRuntime {
               // treat either as terminal so runs do not hang forever.
               const completedAssistant = fresh.find(
                 (m: any) =>
-                  m?.type === "assistant" &&
-                  (m?.finish === "stop" || m?.finish === "length"),
+                  m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
               );
               const terminal = idle ?? (completedAssistant ? { outcome: "succeeded" } : undefined);
               if (terminal) {
@@ -312,7 +308,11 @@ export class OpenCodeRuntime implements AgentRuntime {
                   if (!m) return "";
                   if (Array.isArray(m.content)) {
                     return m.content
-                      .filter((c: any) => c && (c.type === undefined || c.type === "text" || c.type === "output_text"))
+                      .filter(
+                        (c: any) =>
+                          c &&
+                          (c.type === undefined || c.type === "text" || c.type === "output_text"),
+                      )
                       .map((c: any) => c?.text ?? c?.content ?? c?.value)
                       .filter(Boolean)
                       .join("\n");
@@ -337,12 +337,7 @@ export class OpenCodeRuntime implements AgentRuntime {
                 if (text.trim().length === 0 && (idle?.outcome === "succeeded" || !idle)) {
                   text = "(no response)";
                 }
-                const exitCode =
-                  idle !== undefined
-                    ? idle.outcome === "succeeded"
-                      ? 0
-                      : 1
-                    : 0;
+                const exitCode = idle !== undefined ? (idle.outcome === "succeeded" ? 0 : 1) : 0;
                 if (!state.cancelled) {
                   state.events.push({ _tag: "completed", summary: text });
                   state.result = {

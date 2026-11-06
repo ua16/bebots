@@ -152,8 +152,7 @@ describe("App", () => {
     let sent = false;
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = String(input).replace("http://127.0.0.1:4747", "");
-      const ok = (body: unknown, status = 200) =>
-        new Response(JSON.stringify(body), { status });
+      const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
       if (path === "/api/v1/conversations") {
         if (init?.method === "POST") {
           return ok(

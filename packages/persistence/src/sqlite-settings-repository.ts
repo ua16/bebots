@@ -16,8 +16,7 @@ export class SqliteSettingsRepository implements SettingsRepository {
     return Effect.try({
       try: () => {
         const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as
-          | { value: string }
-          | undefined;
+          { value: string } | undefined;
         return row?.value ?? null;
       },
       catch: (cause: unknown) => new RepositoryError("Failed to read setting", cause),

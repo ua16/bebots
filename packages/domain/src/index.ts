@@ -67,15 +67,10 @@ export function validateModelRef(model: unknown): ValidatedModelRef {
     const value = Schema.decodeUnknownSync(ModelRefSchema)(model);
     return { valid: true, value };
   } catch (e) {
-    const issue = (e as { issue?: { _tag?: string; path?: unknown[]; issues?: unknown[] } })
-      .issue;
+    const issue = (e as { issue?: { _tag?: string; path?: unknown[]; issues?: unknown[] } }).issue;
     const path = Array.isArray(issue?.path) ? issue.path : [];
     const field =
-      path[0] === "providerID"
-        ? "model.providerID"
-        : path[0] === "id"
-          ? "model.id"
-          : "model";
+      path[0] === "providerID" ? "model.providerID" : path[0] === "id" ? "model.id" : "model";
     const message =
       path[0] === "providerID"
         ? "Provider id cannot be empty"

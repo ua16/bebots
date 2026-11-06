@@ -144,9 +144,7 @@ export class ConversationService {
 
   // --- Messages ---
 
-  addMessage(
-    input: AddMessageInput,
-  ): Effect.Effect<Message, ValidationError | RepositoryError> {
+  addMessage(input: AddMessageInput): Effect.Effect<Message, ValidationError | RepositoryError> {
     const messageRepo = this.messageRepo;
     const clock = this.clock;
     const ids = this.ids;

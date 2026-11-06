@@ -1,4 +1,11 @@
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiError, HttpApiSchema, OpenApi } from "effect/http-api";
+import {
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiError,
+  HttpApiSchema,
+  OpenApi,
+} from "effect/http-api";
 import { Schema, SchemaGetter } from "effect";
 import { ModelRefPatchSchema, ModelRefSchema, ScheduleTriggerSchema } from "@bebots/domain";
 
@@ -206,42 +213,125 @@ const token = HttpApiGroup.make("token").add(
 );
 
 const models = HttpApiGroup.make("models").add(
-  HttpApiEndpoint.get("models", "/api/v1/models", { success: Schema.Array(ModelInfoResponse), error: ApiError }),
+  HttpApiEndpoint.get("models", "/api/v1/models", {
+    success: Schema.Array(ModelInfoResponse),
+    error: ApiError,
+  }),
 );
 
 const settings = HttpApiGroup.make("settings").add(
-  HttpApiEndpoint.get("getSettings", "/api/v1/settings", { success: SettingsResponse, error: ApiError }),
-  HttpApiEndpoint.put("putSettings", "/api/v1/settings", { payload: SettingsBody, success: SettingsResponse, error: ApiError }),
+  HttpApiEndpoint.get("getSettings", "/api/v1/settings", {
+    success: SettingsResponse,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.put("putSettings", "/api/v1/settings", {
+    payload: SettingsBody,
+    success: SettingsResponse,
+    error: ApiError,
+  }),
 );
 
 const bots = HttpApiGroup.make("bots").add(
   HttpApiEndpoint.get("listBots", "/api/v1/bots", {
     query: Schema.Struct({ includeArchived: Schema.optional(Schema.Boolean) }),
-    success: U, error: ApiError,
+    success: U,
+    error: ApiError,
   }),
-  HttpApiEndpoint.post("createBot", "/api/v1/bots", { payload: BotBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
-  HttpApiEndpoint.get("getBot", "/api/v1/bots/:id", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.patch("updateBot", "/api/v1/bots/:id", { params: IdParams, payload: BotBody, success: U, error: ApiError }),
-  HttpApiEndpoint.get("listBotRuns", "/api/v1/bots/:id/runs", { params: IdParams, success: Schema.Array(RunResponse), error: ApiError }),
-  HttpApiEndpoint.post("createBotRun", "/api/v1/bots/:id/runs", { params: IdParams, payload: RunBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
+  HttpApiEndpoint.post("createBot", "/api/v1/bots", {
+    payload: BotBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("getBot", "/api/v1/bots/:id", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.patch("updateBot", "/api/v1/bots/:id", {
+    params: IdParams,
+    payload: BotBody,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("listBotRuns", "/api/v1/bots/:id/runs", {
+    params: IdParams,
+    success: Schema.Array(RunResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("createBotRun", "/api/v1/bots/:id/runs", {
+    params: IdParams,
+    payload: RunBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
 );
 
 const runs = HttpApiGroup.make("runs").add(
-  HttpApiEndpoint.get("getRun", "/api/v1/runs/:id", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.get("runEvents", "/api/v1/runs/:id/events", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.post("cancelRun", "/api/v1/runs/:id/cancel", { params: IdParams, success: U, error: ApiError }),
+  HttpApiEndpoint.get("getRun", "/api/v1/runs/:id", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("runEvents", "/api/v1/runs/:id/events", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("cancelRun", "/api/v1/runs/:id/cancel", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
 );
 
 const conversations = HttpApiGroup.make("conversations").add(
-  HttpApiEndpoint.get("listConversations", "/api/v1/conversations", { success: Schema.Array(ConversationResponse), error: ApiError }),
-  HttpApiEndpoint.post("createConversation", "/api/v1/conversations", { payload: ConversationBody, success: HttpApiSchema.status(201)(ConversationResponse), error: ApiError }),
-  HttpApiEndpoint.get("getConversation", "/api/v1/conversations/:id", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.patch("updateConversation", "/api/v1/conversations/:id", { params: IdParams, payload: ConversationBody, success: U, error: ApiError }),
-  HttpApiEndpoint.delete("deleteConversation", "/api/v1/conversations/:id", { params: IdParams, success: HttpApiSchema.NoContent, error: ApiError }),
-  HttpApiEndpoint.get("listMessages", "/api/v1/conversations/:id/messages", { params: IdParams, success: Schema.Array(MessageResponse), error: ApiError }),
-  HttpApiEndpoint.post("postMessage", "/api/v1/conversations/:id/messages", { params: IdParams, payload: MessageBody, success: HttpApiSchema.status(201)(PostMessageResponse), error: ApiError }),
-  HttpApiEndpoint.get("listSessions", "/api/v1/conversations/:id/sessions", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.post("createSession", "/api/v1/conversations/:id/sessions", { params: IdParams, payload: SessionBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
+  HttpApiEndpoint.get("listConversations", "/api/v1/conversations", {
+    success: Schema.Array(ConversationResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("createConversation", "/api/v1/conversations", {
+    payload: ConversationBody,
+    success: HttpApiSchema.status(201)(ConversationResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("getConversation", "/api/v1/conversations/:id", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.patch("updateConversation", "/api/v1/conversations/:id", {
+    params: IdParams,
+    payload: ConversationBody,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.delete("deleteConversation", "/api/v1/conversations/:id", {
+    params: IdParams,
+    success: HttpApiSchema.NoContent,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("listMessages", "/api/v1/conversations/:id/messages", {
+    params: IdParams,
+    success: Schema.Array(MessageResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("postMessage", "/api/v1/conversations/:id/messages", {
+    params: IdParams,
+    payload: MessageBody,
+    success: HttpApiSchema.status(201)(PostMessageResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("listSessions", "/api/v1/conversations/:id/sessions", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("createSession", "/api/v1/conversations/:id/sessions", {
+    params: IdParams,
+    payload: SessionBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
 );
 
 const tasks = HttpApiGroup.make("tasks").add(
@@ -249,16 +339,48 @@ const tasks = HttpApiGroup.make("tasks").add(
     query: Schema.Struct({
       requester: Schema.optional(Schema.String),
       assignee: Schema.optional(Schema.String),
-      status: Schema.optional(Schema.Literals(["queued", "assigned", "running", "succeeded", "failed", "cancelled", "awaiting_approval"])),
+      status: Schema.optional(
+        Schema.Literals([
+          "queued",
+          "assigned",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "awaiting_approval",
+        ]),
+      ),
       limit: Schema.optional(Schema.Number),
     }),
-    success: U, error: ApiError,
+    success: U,
+    error: ApiError,
   }),
-  HttpApiEndpoint.post("createTask", "/api/v1/tasks", { payload: TaskBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
-  HttpApiEndpoint.get("getTask", "/api/v1/tasks/:id", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.post("assignTask", "/api/v1/tasks/:id/assign", { params: IdParams, payload: U, success: U, error: ApiError }),
-  HttpApiEndpoint.post("cancelTask", "/api/v1/tasks/:id/cancel", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.post("delegateTask", "/api/v1/tasks/delegate", { payload: DelegateBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
+  HttpApiEndpoint.post("createTask", "/api/v1/tasks", {
+    payload: TaskBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("getTask", "/api/v1/tasks/:id", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("assignTask", "/api/v1/tasks/:id/assign", {
+    params: IdParams,
+    payload: U,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("cancelTask", "/api/v1/tasks/:id/cancel", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("delegateTask", "/api/v1/tasks/delegate", {
+    payload: DelegateBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
 );
 
 const schedules = HttpApiGroup.make("schedules").add(
@@ -268,13 +390,36 @@ const schedules = HttpApiGroup.make("schedules").add(
       createdBy: Schema.optional(Schema.String),
       limit: Schema.optional(Schema.Number),
     }),
-    success: Schema.Array(ScheduleResponse), error: ApiError,
+    success: Schema.Array(ScheduleResponse),
+    error: ApiError,
   }),
-  HttpApiEndpoint.post("createSchedule", "/api/v1/schedules", { payload: ScheduleBody, success: HttpApiSchema.status(201)(ScheduleResponse), error: ApiError }),
-  HttpApiEndpoint.get("getSchedule", "/api/v1/schedules/:id", { params: IdParams, success: U, error: ApiError }),
-  HttpApiEndpoint.patch("updateSchedule", "/api/v1/schedules/:id", { params: IdParams, payload: ScheduleBody, success: ScheduleResponse, error: ApiError }),
-  HttpApiEndpoint.delete("deleteSchedule", "/api/v1/schedules/:id", { params: IdParams, success: HttpApiSchema.NoContent, error: ApiError }),
-  HttpApiEndpoint.get("listOccurrences", "/api/v1/schedules/:id/occurrences", { params: IdParams, query: LimitQuery, success: Schema.Array(OccurrenceResponse), error: ApiError }),
+  HttpApiEndpoint.post("createSchedule", "/api/v1/schedules", {
+    payload: ScheduleBody,
+    success: HttpApiSchema.status(201)(ScheduleResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("getSchedule", "/api/v1/schedules/:id", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.patch("updateSchedule", "/api/v1/schedules/:id", {
+    params: IdParams,
+    payload: ScheduleBody,
+    success: ScheduleResponse,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.delete("deleteSchedule", "/api/v1/schedules/:id", {
+    params: IdParams,
+    success: HttpApiSchema.NoContent,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("listOccurrences", "/api/v1/schedules/:id/occurrences", {
+    params: IdParams,
+    query: LimitQuery,
+    success: Schema.Array(OccurrenceResponse),
+    error: ApiError,
+  }),
 );
 
 const activity = HttpApiGroup.make("activity").add(
@@ -285,9 +430,14 @@ const activity = HttpApiGroup.make("activity").add(
       entityId: Schema.optional(Schema.String),
       limit: Schema.optional(Schema.Number),
     }),
-    success: U, error: ApiError,
+    success: U,
+    error: ApiError,
   }),
-  HttpApiEndpoint.post("postActivity", "/api/v1/activity", { payload: ActivityBody, success: HttpApiSchema.status(201)(U), error: ApiError }),
+  HttpApiEndpoint.post("postActivity", "/api/v1/activity", {
+    payload: ActivityBody,
+    success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
 );
 
 const control = HttpApiGroup.make("control").add(
@@ -303,11 +453,24 @@ const notes = HttpApiGroup.make("notes").add(
       q: Schema.optional(Schema.String),
       botId: Schema.optional(Schema.String),
     }),
-    success: U, error: ApiError,
+    success: U,
+    error: ApiError,
   }),
 );
 
 export class Api extends HttpApi.make("bebots")
-  .add(health, token, models, settings, bots, runs, conversations, tasks, schedules, activity, control, notes)
+  .add(
+    health,
+    token,
+    models,
+    settings,
+    bots,
+    runs,
+    conversations,
+    tasks,
+    schedules,
+    activity,
+    control,
+    notes,
+  )
   .annotateMerge(OpenApi.annotations({ title: "Bebots Local API" })) {}
-

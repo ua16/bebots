@@ -1,0 +1,17 @@
+# EditorConfig — aligns editors and language servers with .prettierrc.
+# TypeScript/JS formatting is owned by Prettier; this file governs the rest
+# and keeps indentation/line-endings sane where formatters don't run.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{js,ts,tsx,jsx,mjs,cjs,json,jsonc,yml,yaml,md}]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab
