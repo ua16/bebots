@@ -41,6 +41,11 @@ import { createMcpServer } from "./mcp";
 
 const isDev = !app.isPackaged;
 
+const headless =
+  process.argv.includes("--headless") ||
+  process.env.BEBOTS_HEADLESS === "1" ||
+  process.env.BEBOTS_HEADLESS === "true";
+
 if (isDev) {
   app.commandLine?.appendSwitch("no-sandbox");
   app.commandLine?.appendSwitch("disable-gpu");
@@ -644,31 +649,44 @@ function createWindow(): void {
 app
   .whenReady()
   .then(async () => {
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      // The renderer talks to the local HTTP API on this concrete origin
-      // (narrowed from a blanket host allowance; see issue #13 for further
-      // CSP tightening).
-      const apiOrigin = apiPort !== null ? ` http://127.0.0.1:${apiPort}` : "";
-      const csp = isDev
-        ? `default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*${apiOrigin} ws://localhost:* data:; img-src 'self' data:; font-src 'self' data:`
-        : `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${apiOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          "Content-Security-Policy": [csp],
-        },
+    if (!headless) {
+      session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        // The renderer talks to the local HTTP API on this concrete origin
+        // (narrowed from a blanket host allowance; see issue #13 for further
+        // CSP tightening).
+        const apiOrigin = apiPort !== null ? ` http://127.0.0.1:${apiPort}` : "";
+        const csp = isDev
+          ? `default-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:*${apiOrigin} ws://localhost:* data:; img-src 'self' data:; font-src 'self' data:`
+          : `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${apiOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
+        callback({
+          responseHeaders: {
+            ...details.responseHeaders,
+            "Content-Security-Policy": [csp],
+          },
+        });
       });
-    });
+    }
 
     await setupBotService();
 
-    createWindow();
+    if (headless) {
+      console.log(
+        `[bebots] headless server listening on http://127.0.0.1:${apiPort} (token in api-token.txt)`,
+      );
+      const shutdown = () => {
+        app.quit();
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    } else {
+      createWindow();
 
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    });
+      app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          createWindow();
+        }
+      });
+    }
   })
   .catch((error) => {
     console.error("Failed to initialize app", error);
@@ -676,6 +694,7 @@ app
   });
 
 app.on("window-all-closed", () => {
+  if (headless) return;
   if (process.platform !== "darwin") {
     app.quit();
   }

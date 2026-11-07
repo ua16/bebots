@@ -8,6 +8,7 @@ const FLAG_ENV = {
   "--show-extra-logs": "SHOW_EXTRA_LOGS",
   "--show-mcp-logs": "SHOW_MCP_LOGS",
   "--show-scheduling-logs": "SHOW_SCHEDULING_LOGS",
+  "--headless": "BEBOTS_HEADLESS",
 };
 const flagNames = Object.keys(FLAG_ENV);
 const forwarded = args.filter((a) => !flagNames.includes(a));

@@ -18,10 +18,6 @@ Default five-role label vocabulary (`needs-triage`, `needs-info`, `ready-for-age
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-### In progress: API layer foundation refactor
+### Headless server (for testing)
 
-The HTTP API is being migrated to Effect `HttpApi` (milestone branch stack; see
-`REFACTOR-PLAN.md` and `docs/adr/0001-http-api-architecture.md`). While this is in
-flight: agents never merge PRs, no new hand-rolled `as` casts, wire-behavior parity is
-the contract, and `PLAN.md` is untouched. Read `REFACTOR-PLAN.md` before touching
-`packages/api`, the HTTP routes, or the renderer client.
+Start the bot server without the Electron window: `bun run dev -- --headless` (or `BEBOTS_HEADLESS=1`). Port is written to `api-port.txt` in user data; token in `api-token.txt`.
