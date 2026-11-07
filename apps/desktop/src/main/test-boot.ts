@@ -43,6 +43,10 @@ export type BootedApp = {
 export type BootOptions = {
   /** Temp-dir prefix for the fake user-data dir. */
   tmpPrefix?: string;
+  /**
+   * Boot into this directory instead of a fresh temp dir (reboot scenario).
+   */
+  existingDir?: string;
   /** Env keys to set (string value) or clear (`undefined`) before the import. */
   env?: Record<string, string | undefined>;
   /**
@@ -54,7 +58,8 @@ export type BootOptions = {
 };
 
 export async function bootTestApp(options: BootOptions = {}): Promise<BootedApp> {
-  const dir = mkdtempSync(join(tmpdir(), options.tmpPrefix ?? "bebots-test-"));
+  const dir =
+    options.existingDir ?? mkdtempSync(join(tmpdir(), options.tmpPrefix ?? "bebots-test-"));
   vi.resetModules();
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (value === undefined) {
@@ -64,6 +69,12 @@ export async function bootTestApp(options: BootOptions = {}): Promise<BootedApp>
     }
   }
   await options.beforeBoot?.(dir);
+
+  // The previous boot's port file would confuse the readiness poll below
+  // with a stale port — drop it before re-import.
+  if (options.existingDir) {
+    rmSync(join(dir, "api-port.txt"), { force: true });
+  }
 
   const handlers: Record<string, IpcHandler> = {};
   const appHandlers: Record<string, IpcHandler> = {};
@@ -117,6 +128,18 @@ export async function bootTestApp(options: BootOptions = {}): Promise<BootedApp>
 }
 
 /**
+ * Restart the app on the same user-data dir (persistence round-trip): closes
+ * server, runtime, indexer and DB through the captured `before-quit`
+ * handler, re-boots `./index` on `app.dir`, and returns a NEW `BootedApp`
+ * with the fresh port (the token is reused) re-read from the handshake
+ * files. Env keys from the original boot stay set on `process.env`.
+ */
+export async function reboot(app: BootedApp): Promise<BootedApp> {
+  app.appHandlers["before-quit"]?.();
+  return bootTestApp({ existingDir: app.dir });
+}
+
+/**
  * `api-port.txt` is written after `server.listen` resolves, so its existence
  * proves the server is up — poll for it instead of sleeping a fixed
  * 50–300ms per suite.
@@ -150,7 +173,7 @@ export async function api(
     },
     ...(body !== undefined && { body: JSON.stringify(body) }),
   });
-  return { status: res.status, body: (await res.json()) as unknown };
+  return { status: res.status, body: res.status === 204 ? null : ((await res.json()) as unknown) };
 }
 
 /** JSON-RPC POST against `/mcp`, with the shared Accept/auth headers. */
