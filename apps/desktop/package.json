@@ -11,16 +11,17 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@bebots/domain": "workspace:*",
-    "@bebots/shared": "workspace:*",
-    "effect": "^4.0.0",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
     "@bebots/api": "workspace:*",
     "@bebots/application": "workspace:*",
+    "@bebots/domain": "workspace:*",
     "@bebots/persistence": "workspace:*",
-    "sql.js": "^1.15.1",
-    "@bebots/runtime-opencode": "workspace:*"
+    "@bebots/runtime-opencode": "workspace:*",
+    "@bebots/shared": "workspace:*",
+    "effect": "^4.0.0",
+    "lucide-react": "^1.70.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "sql.js": "^1.15.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

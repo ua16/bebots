@@ -104,6 +104,7 @@ describe("App", () => {
     expect(await screen.findByText("Bots home: /tmp/bots")).toBeTruthy();
 
     fireEvent.click(await screen.findByText("Bot One"));
+    fireEvent.click(await screen.findByRole("button", { name: "Bot settings" }));
 
     const prompt = await screen.findByLabelText("Prompt");
     fireEvent.change(prompt, { target: { value: "do it" } });
@@ -121,6 +122,7 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByText("Bot One"));
+    fireEvent.click(await screen.findByRole("button", { name: "Bot settings" }));
     fireEvent.click(await screen.findByText("Run"));
 
     expect(await screen.findByText("Run: failed")).toBeTruthy();
@@ -237,9 +239,9 @@ describe("App", () => {
 
     // Send appends over HTTP, refreshes the thread, and the bot's reply run
     // result arrives via post-send polling (full reply loop, issue #18).
-    const input = screen.getByPlaceholderText("Type a message");
+    const input = screen.getByPlaceholderText("Message Bot One");
     fireEvent.change(input, { target: { value: "why hello" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("why hello")).toBeTruthy();
     await screen.findByText("here you go", {}, { timeout: 5_000 });
 
