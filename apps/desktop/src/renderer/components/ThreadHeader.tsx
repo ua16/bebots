@@ -1,0 +1,50 @@
+import { Settings } from "lucide-react";
+import type { BebotsBot } from "../../shared/preload-api";
+import { BotAvatar } from "./avatar";
+
+interface ThreadHeaderProps {
+  readonly headerBot: BebotsBot | null;
+  readonly headerTitle: string;
+  readonly threadBotIds: readonly string[];
+  readonly extraBotIds: readonly string[];
+  readonly participantsLabel: string;
+  readonly settingsOpen: boolean;
+  readonly onToggleSettings: () => void;
+}
+
+/** Thread identity bar shown across the chat and bot-settings views. */
+export function ThreadHeader({
+  headerBot,
+  headerTitle,
+  threadBotIds,
+  extraBotIds,
+  participantsLabel,
+  settingsOpen,
+  onToggleSettings,
+}: ThreadHeaderProps) {
+  return (
+    <header className="chat-thread-head">
+      {headerBot !== null ? <BotAvatar id={headerBot.id} size={47} /> : null}
+      <div className="thread-head-titles">
+        <h2>{headerTitle}</h2>
+        {threadBotIds.length > 1 && <p className="muted">{participantsLabel}</p>}
+      </div>
+      {extraBotIds.length > 0 && (
+        <div className="thread-extra-avatars" aria-hidden>
+          {extraBotIds.map((id) => (
+            <BotAvatar key={id} id={id} size={24} />
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        className={"icon-pill-button" + (settingsOpen ? " toggled" : "")}
+        aria-label="Bot settings"
+        title={headerBot ? `${headerBot.name} settings` : "Bot settings"}
+        onClick={onToggleSettings}
+      >
+        <Settings size={21} strokeWidth={1.8} aria-hidden />
+      </button>
+    </header>
+  );
+}

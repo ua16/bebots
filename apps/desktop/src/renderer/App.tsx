@@ -1,9 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, ChevronUp, Plus, Search, Settings, X } from "lucide-react";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
-import { parseModelRef } from "@bebots/domain";
+import type {
+  ApiConversation,
+  ApiMessage,
+  ApiModel,
+  ApiRun,
+  ApiSchedule,
+  ApiScheduleOccurrence,
+} from "./lib/api-types";
+import {
+  appDefaultToSelection,
+  botModelToSelection,
+  groupModelsByProvider,
+  selectionToApiModel,
+  type ModelSelection,
+} from "./lib/model-selection";
+import { UNASSIGNED_GROUP_ID, groupSidebarSessions, type SessionGroup } from "./lib/sidebar-groups";
+import { botName } from "./lib/bot-name";
+import { Sidebar } from "./components/Sidebar";
+import { ThreadHeader } from "./components/ThreadHeader";
+import { GlobalSettingsOverlay } from "./components/GlobalSettingsOverlay";
+import { BotEditor } from "./components/BotEditor";
+import { MessageThread } from "./components/MessageThread";
+import { Composer } from "./components/Composer";
+import { useMentions } from "./hooks/useMentions";
 import "./styles.css";
 
 declare global {
@@ -11,198 +33,6 @@ declare global {
     bebots?: BebotsPreloadApi;
   }
 }
-
-interface ApiConversation {
-  readonly id: string;
-  readonly kind: string;
-  readonly title: string;
-  readonly participants: readonly string[];
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-interface ApiMessage {
-  readonly id: string;
-  readonly conversationId: string;
-  readonly senderType: "human" | "bot" | "system";
-  readonly senderId?: string | null | undefined;
-  readonly content: string;
-  readonly createdAt: number;
-}
-
-interface ApiRun {
-  readonly id: string;
-  readonly botId: string;
-  readonly status: string;
-  readonly prompt: string;
-  readonly summary?: string | undefined;
-  readonly error?: string | undefined;
-  readonly createdAt: number;
-}
-
-interface ApiModelRef {
-  readonly providerID: string;
-  readonly id: string;
-}
-
-interface ApiSchedule {
-  readonly id: string;
-  readonly botId: string;
-  readonly prompt: string;
-  readonly trigger:
-    | { kind: "interval"; everyMs: number }
-    | { kind: "once"; at: number }
-    | { kind: "cron"; expression: string; timezone: string };
-  readonly enabled: boolean;
-  /** The schedule's dedicated thread with the user (provisioned on first fire). */
-  readonly conversationId?: string | null | undefined;
-  readonly nextRunAt?: number | null | undefined;
-  readonly lastRunAt?: number | null | undefined;
-  readonly createdAt: number;
-}
-
-interface ApiScheduleOccurrence {
-  readonly id: string;
-  readonly scheduleId: string;
-  readonly scheduledFor: number;
-  readonly status: string;
-  readonly runId?: string | null | undefined;
-  readonly attempts: number;
-  readonly error?: string | null | undefined;
-}
-
-/** Short human description of a schedule trigger, e.g. "every 5m" or cron. */
-function describeTrigger(trigger: ApiSchedule["trigger"]): string {
-  if (trigger.kind === "interval") {
-    const minutes = Math.round(trigger.everyMs / 60_000);
-    return minutes % 60 === 0 && minutes >= 60
-      ? `every ${Math.round(minutes / 60)}h`
-      : `every ${minutes}m`;
-  }
-  if (trigger.kind === "once") {
-    return new Date(trigger.at).toLocaleString();
-  }
-  return `cron ${trigger.expression} (${trigger.timezone})`;
-}
-
-interface ApiModel {
-  readonly providerID: string;
-  readonly id: string;
-  readonly name: string;
-  readonly enabled: boolean;
-}
-
-/**
- * A model-picker selection: which model (if any) to run with, expressed as a
- * union so the two "use no specific model" meanings — follow the app default
- * (bot editor) and use OpenCode's own default (app settings) — stay distinct.
- */
-type ModelSelection =
-  | { readonly kind: "app-default" }
-  | { readonly kind: "runtime-default" }
-  | { readonly kind: "ref"; readonly ref: ApiModelRef };
-
-const APP_DEFAULT_KEY = "default";
-const RUNTIME_DEFAULT_KEY = "none";
-
-/** A <select> value must be a string, so refs travel JSON-encoded. */
-function selectionToSelectValue(selection: ModelSelection): string {
-  if (selection.kind === "app-default") return APP_DEFAULT_KEY;
-  if (selection.kind === "runtime-default") return RUNTIME_DEFAULT_KEY;
-  return JSON.stringify(selection.ref);
-}
-
-/** Select value for a catalog model — canonical ref only, so the
- *  `onChange` round-trip through the domain parser reproduces it exactly
- *  (the full `ApiModel` carries extra keys the parser strips). */
-function modelToSelectValue(m: ApiModel): string {
-  return JSON.stringify({ providerID: m.providerID, id: m.id });
-}
-
-/** Inverse of `selectionToSelectValue`; `null` signals an unparseable key. */
-function selectValueToSelection(value: string): ModelSelection | null {
-  if (value === APP_DEFAULT_KEY) return { kind: "app-default" };
-  if (value === RUNTIME_DEFAULT_KEY) return { kind: "runtime-default" };
-  // Shared domain parser — the UI does not re-implement model-ref validation.
-  const ref = parseModelRef(value);
-  return ref ? { kind: "ref", ref } : null;
-}
-
-/** A saved model on a bot: `null` means "follow the app default". */
-function botModelToSelection(ref: ApiModelRef | null | undefined): ModelSelection {
-  return ref ? { kind: "ref", ref } : { kind: "app-default" };
-}
-
-/** The user's saved app default; `null` means "OpenCode default". */
-function appDefaultToSelection(ref: ApiModelRef | null | undefined): ModelSelection {
-  return ref ? { kind: "ref", ref } : { kind: "runtime-default" };
-}
-
-/** The model override (or explicit `null`) implied by a selection. */
-function selectionToApiModel(selection: ModelSelection): ApiModelRef | null {
-  return selection.kind === "ref" ? selection.ref : null;
-}
-
-/**
- * Figma palette: bot avatar dots color-code bots across sidebar and threads.
- * A stable hash of the bot id keeps each bot's color fixed across reloads.
- */
-const BOT_COLORS: readonly string[] = [
-  "#FF0000",
-  "#1B73FF",
-  "#E41BFF",
-  "#63BE58",
-  "#FF8800",
-  "#00C2D8",
-  "#FFD600",
-  "#8C64FF",
-];
-
-function hashId(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i += 1) {
-    h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
-
-function botColor(id: string | null | undefined): string {
-  if (id === null || id === undefined) return "#5A5A5A";
-  return BOT_COLORS[hashId(id) % BOT_COLORS.length] ?? "#5A5A5A";
-}
-
-function BotAvatar({
-  id,
-  size,
-  title,
-}: {
-  id: string | null | undefined;
-  size: number;
-  title?: string | undefined;
-}) {
-  return (
-    <span
-      className="bot-avatar"
-      style={{ width: size, height: size, backgroundColor: botColor(id) }}
-      title={title}
-      aria-hidden={title === undefined ? true : undefined}
-    />
-  );
-}
-
-/**
- * One sidebar row per bot, with the bot's sessions nested underneath, newest
- * first. A conversation with several bot participants appears once under
- * every participant; human-only threads land in the trailing group.
- */
-interface SessionGroup {
-  readonly botId: string;
-  readonly name: string;
-  readonly sessions: readonly ApiConversation[];
-}
-
-const HUMAN_ONLY_GROUP_ID = "__unassigned__";
-const HUMAN_ONLY_GROUP_NAME = "Other sessions";
 
 export function App() {
   const [platform, setPlatform] = useState<string>("unknown");
@@ -236,13 +66,12 @@ export function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<readonly ApiMessage[]>([]);
   const [draft, setDraft] = useState("");
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [mentionStart, setMentionStart] = useState<number | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  // Sidebar: bot-group expansion (absent = expanded) and search filter.
+  // Sidebar: bot-group expansion (absent = expanded).
   const [collapsedBots, setCollapsedBots] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState("");
-  const composerInputRef = useRef<HTMLInputElement | null>(null);
+  // Bot groups whose session list is fully expanded (beyond the 5 most recent).
+  const [expandedSessions, setExpandedSessions] = useState<ReadonlySet<string>>(new Set());
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Run history for the selected bot
   const [runHistory, setRunHistory] = useState<readonly ApiRun[]>([]);
   // Schedules for the selected bot (durable scheduled runs)
@@ -325,7 +154,7 @@ export function App() {
     if (!endpoint) return;
     const interval = setInterval(() => void refreshConversations(), 60_000);
     return () => clearInterval(interval);
-  }, [refreshConversations]);
+  }, [endpoint, refreshConversations]);
 
   const refreshMessages = async (conversationId: string) => {
     if (!endpoint) return;
@@ -443,9 +272,7 @@ export function App() {
           }),
       );
       setDraft("");
-      setMentionQuery(null);
-      setMentionStart(null);
-      setMentionIndex(0);
+      mentions.clearMentions();
       setThreadNotice(null);
       await refreshMessages(conversationId);
       if (reply.runId !== null) {
@@ -572,15 +399,10 @@ export function App() {
   }, [selected]);
 
   // Group the model catalog by provider (stable, response order) for optgroups.
-  const modelGroups: ReadonlyArray<[string, readonly ApiModel[]]> = useMemo(() => {
-    const groups = new Map<string, ApiModel[]>();
-    for (const m of models) {
-      const list = groups.get(m.providerID) ?? [];
-      list.push(m);
-      groups.set(m.providerID, list);
-    }
-    return [...groups.entries()];
-  }, [models]);
+  const modelGroups: ReadonlyArray<[string, readonly ApiModel[]]> = useMemo(
+    () => groupModelsByProvider(models),
+    [models],
+  );
 
   const saveAppSettings = async () => {
     if (!endpoint) return;
@@ -608,6 +430,25 @@ export function App() {
         model: selectionToApiModel(botModelSelection),
       });
       setSelectedId(bot.id);
+      setView("bot-settings");
+      await refreshBots();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleCreateBot = async () => {
+    if (!api) return;
+    setError(null);
+    try {
+      const bot = await api.create({
+        name: "New bot",
+        description: "",
+        persona: "",
+        model: null,
+      });
+      setSelectedId(bot.id);
+      setView("bot-settings");
       await refreshBots();
     } catch (e) {
       setError(String(e));
@@ -733,7 +574,12 @@ export function App() {
   };
 
   const toggleBotExpanded = (botId: string) => {
-    setSelectedId(botId);
+    // Selecting the synthetic "other sessions" group must not masquerade as a
+    // bot: it has no bot record, so selecting it would feed a fake id into
+    // run/schedule lookups and the bot-settings form.
+    if (botId !== UNASSIGNED_GROUP_ID) {
+      setSelectedId(botId);
+    }
     setView("chat");
     setCollapsedBots((prev) => {
       const next = new Set(prev);
@@ -746,90 +592,33 @@ export function App() {
     });
   };
 
-  /**
-   * Sidebar groups: bots ordered by their newest session (recency rank),
-   * each with that bot's sessions newest-first. Multi-bot threads repeat
-   * under every participant; human-only threads tail in a shared group.
-   */
-  const sessionGroups: readonly SessionGroup[] = useMemo(() => {
-    const byBot = new Map<string, ApiConversation[]>();
-    const orphans: ApiConversation[] = [];
-    const chronological = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
-    for (const conv of chronological) {
-      const botIds = conv.participants.filter((p) => p !== "human");
-      if (botIds.length === 0) orphans.push(conv);
-      for (const botId of botIds) {
-        const list = byBot.get(botId) ?? [];
-        list.push(conv);
-        byBot.set(botId, list);
+  const toggleShowAllSessions = (botId: string) => {
+    setExpandedSessions((prev) => {
+      const next = new Set(prev);
+      if (next.has(botId)) {
+        next.delete(botId);
+      } else {
+        next.add(botId);
       }
-    }
-    const groups: SessionGroup[] = bots.map((bot) => ({
-      botId: bot.id,
-      name: bot.name,
-      sessions: byBot.get(bot.id) ?? [],
-    }));
-    const newestAt = (g: SessionGroup) => g.sessions[0]?.updatedAt ?? 0;
-    groups.sort((a, b) => {
-      if (newestAt(a) !== newestAt(b)) return newestAt(b) - newestAt(a);
-      return a.name.localeCompare(b.name);
+      return next;
     });
-    if (orphans.length > 0) {
-      groups.push({
-        botId: HUMAN_ONLY_GROUP_ID,
-        name: HUMAN_ONLY_GROUP_NAME,
-        sessions: orphans,
-      });
-    }
-    return groups;
-  }, [bots, conversations]);
+  };
 
-  const mentionSuggestions =
-    mentionQuery === null
-      ? []
-      : bots.filter(
-          (b) =>
-            b.name.toLowerCase().includes(mentionQuery.toLowerCase()) ||
-            b.id.toLowerCase().includes(mentionQuery.toLowerCase()),
-        );
-
-  const selectMention = useCallback(
-    (bot: BebotsBot) => {
-      if (mentionStart === null || mentionQuery === null) return;
-      const before = draft.slice(0, mentionStart);
-      const after = draft.slice(mentionStart + 1 + mentionQuery.length);
-      setDraft(`${before}@${bot.id} ${after}`);
-      setMentionQuery(null);
-      setMentionStart(null);
-      setMentionIndex(0);
-      composerInputRef.current?.focus();
-    },
-    [draft, mentionQuery, mentionStart],
+  const sessionGroups: readonly SessionGroup[] = useMemo(
+    () => groupSidebarSessions(bots, conversations),
+    [bots, conversations],
   );
 
-  const renderMentionContent = (content: string) => {
-    const parts = content.split(/(@[A-Za-z0-9_-]+)/g);
-    return parts.map((part, index) => {
-      const match = part.match(/^@([A-Za-z0-9_-]+)$/);
-      if (match) {
-        const mentioned = bots.find((b) => b.id === match[1]);
-        if (mentioned) {
-          return (
-            <span key={index} className="mention">
-              @<span className="mention-name">{mentioned.name}</span>
-            </span>
-          );
-        }
-      }
-      return <span key={index}>{part}</span>;
-    });
-  };
+  // "@" mention machinery for the composer (detection, popup navigation, completion).
+  const mentions = useMentions({
+    draft,
+    setDraft,
+    bots,
+    inputRef: composerInputRef,
+    onSend: () => void handleSendMessage(),
+  });
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
-  const botName = (id: string | null | undefined) => {
-    if (id === null || id === undefined) return "Bot";
-    return bots.find((b) => b.id === id)?.name ?? id;
-  };
   // The thread's bot participants drive the header identity: the primary bot
   // is whichever participant is currently selected (so session pill context
   // wins), falling back to the first bot participant.
@@ -847,32 +636,14 @@ export function App() {
     ? headerBot.name
     : (activeConversation?.title ?? selected?.name ?? "bebots hub");
   const participantsLabel = activeConversation
-    ? activeConversation.participants.map((p) => botName(p)).join(", ")
+    ? activeConversation.participants.map((p) => botName(bots, p)).join(", ")
     : "";
   const typingBotParticipant = threadBotIds[0];
   const typingLabel =
     typingBotParticipant === undefined
       ? "Bot is thinking…"
-      : `${botName(typingBotParticipant)} is thinking…`;
+      : `${botName(bots, typingBotParticipant)} is thinking…`;
   const composerPlaceholder = headerBot !== null ? `Message ${headerBot.name}` : "Type a message";
-
-  // Sidebar filtering: a bot's name match keeps its whole group visible; a
-  // session-title match shows that session within any group.
-  const query = search.trim().toLowerCase();
-  const visibleGroups = query
-    ? sessionGroups
-        .map((group) => ({
-          group,
-          matches: group.sessions.filter((c) => (c.title || c.id).toLowerCase().includes(query)),
-        }))
-        .filter(
-          ({ group, matches }) => group.name.toLowerCase().includes(query) || matches.length > 0,
-        )
-        .map(({ group, matches }) => ({
-          ...group,
-          sessions: group.name.toLowerCase().includes(query) ? group.sessions : matches,
-        }))
-    : [...sessionGroups];
 
   // Keep the thread pinned to the newest message as replies land.
   useEffect(() => {
@@ -881,6 +652,14 @@ export function App() {
       el.scrollIntoView({ block: "end" });
     }
   }, [messages, pendingReply, threadNotice, activeConversationId]);
+
+  // Auto-grow the composer textarea to fit its content.
+  useEffect(() => {
+    const el = composerInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [draft]);
 
   return (
     <main className="app-main">
@@ -898,556 +677,110 @@ export function App() {
         {/* ------------------------------------------------------------ */}
         {/* Sidebar: search + new session, bot-grouped session list.       */}
         {/* ------------------------------------------------------------ */}
-        <aside className="chat-sidebar">
-          <div className="chat-search">
-            <Search size={22} strokeWidth={2.4} aria-hidden />
-            <input
-              type="search"
-              placeholder="Search"
-              value={search}
-              aria-label="Search sessions"
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <button
-              type="button"
-              className="icon-pill-button"
-              aria-label="New session"
-              title="New session"
-              onClick={() => void handleNewConversation()}
-            >
-              <Plus size={24} strokeWidth={2.6} aria-hidden />
-            </button>
-          </div>
-
-          <div className="chat-groups">
-            {visibleGroups.map((group) => {
-              const expanded = !collapsedBots.has(group.botId);
-              return (
-                <div key={group.botId} className="session-group">
-                  <button
-                    type="button"
-                    className={"bot-row" + (group.botId === selectedId ? " bot-row-selected" : "")}
-                    aria-expanded={expanded}
-                    aria-controls={`sessions-${group.botId}`}
-                    onClick={() => toggleBotExpanded(group.botId)}
-                  >
-                    <BotAvatar id={group.botId} size={49} />
-                    <span className="bot-row-name">{group.name}</span>
-                    {expanded ? (
-                      <ChevronUp size={24} strokeWidth={3} aria-hidden />
-                    ) : (
-                      <ChevronDown size={24} strokeWidth={3} aria-hidden />
-                    )}
-                  </button>
-                  {expanded && (
-                    <ul id={`sessions-${group.botId}`} className="session-pills">
-                      {group.sessions.map((c) => (
-                        <li key={c.id}>
-                          <button
-                            type="button"
-                            className={
-                              "session-pill" + (c.id === activeConversationId ? " selected" : "")
-                            }
-                            onClick={() =>
-                              group.botId === HUMAN_ONLY_GROUP_ID
-                                ? selectConversation(c.id)
-                                : selectConversation(c.id, group.botId)
-                            }
-                          >
-                            {c.title || c.id}
-                          </button>
-                        </li>
-                      ))}
-                      {group.sessions.length === 0 && (
-                        <li className="session-empty">No sessions yet</li>
-                      )}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
-            {visibleGroups.length === 0 && <p className="session-empty">No conversations yet</p>}
-          </div>
-        </aside>
+        <Sidebar
+          groups={sessionGroups}
+          search={search}
+          onSearchChange={setSearch}
+          selectedId={selectedId}
+          activeConversationId={activeConversationId}
+          collapsedBots={collapsedBots}
+          expandedSessions={expandedSessions}
+          onToggleBotExpanded={toggleBotExpanded}
+          onToggleShowAllSessions={toggleShowAllSessions}
+          onSelectConversation={selectConversation}
+          onNewConversation={handleNewConversation}
+          onCreateBot={() => void handleCreateBot()}
+        />
 
         {/* ------------------------------------------------------------- */}
         {/* Workspace: header identity bar, thread or bot settings.        */}
         {/* ------------------------------------------------------------- */}
         <section className="chat-main">
-          <header className="chat-thread-head">
-            {headerBot !== null ? <BotAvatar id={headerBot.id} size={59} /> : null}
-            <div className="thread-head-titles">
-              <h2>{headerTitle}</h2>
-              {threadBotIds.length > 1 && <p className="muted">{participantsLabel}</p>}
-            </div>
-            {extraBotIds.length > 0 && (
-              <div className="thread-extra-avatars" aria-hidden>
-                {extraBotIds.map((id) => (
-                  <BotAvatar key={id} id={id} size={30} />
-                ))}
-              </div>
-            )}
-            <button
-              type="button"
-              className={"icon-pill-button" + (view === "bot-settings" ? " toggled" : "")}
-              aria-label="Bot settings"
-              title={headerBot ? `${headerBot.name} settings` : "Bot settings"}
-              onClick={() => setView((v) => (v === "bot-settings" ? "chat" : "bot-settings"))}
-            >
-              <Settings size={26} strokeWidth={2.2} aria-hidden />
-            </button>
-          </header>
+          <ThreadHeader
+            headerBot={headerBot}
+            headerTitle={headerTitle}
+            threadBotIds={threadBotIds}
+            extraBotIds={extraBotIds}
+            participantsLabel={participantsLabel}
+            settingsOpen={view === "bot-settings"}
+            onToggleSettings={() =>
+              setView((v) => (v === "bot-settings" ? "chat" : "bot-settings"))
+            }
+          />
 
           {view === "bot-settings" ? (
-            <section className="bot-editor settings-scroll">
-              <button
-                type="button"
-                className="pill-button"
-                onClick={() => setGlobalSettingsOpen(true)}
-              >
-                Open Global Settings
-              </button>
-
-              {selected ? (
-                <>
-                  <label className="settings-field">
-                    <span>Name</span>
-                    <input value={name} onChange={(e) => setName(e.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>Description</span>
-                    <input value={description} onChange={(e) => setDescription(e.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>Persona</span>
-                    <textarea
-                      placeholder="Your bot's system prompt, this forms its AGENT.md"
-                      value={persona}
-                      onChange={(e) => setPersona(e.target.value)}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Model</span>
-                    <select
-                      value={selectionToSelectValue(botModelSelection)}
-                      onChange={(e) => {
-                        const selection = selectValueToSelection(e.target.value);
-                        if (selection) setBotModelSelection(selection);
-                      }}
-                    >
-                      <option value={APP_DEFAULT_KEY}>
-                        {defaultModelSelection.kind === "runtime-default"
-                          ? "Global Default"
-                          : "Use app default"}
-                      </option>
-                      {modelGroups.map(([provider, items]) => (
-                        <optgroup key={provider} label={provider}>
-                          {items.map((m) => (
-                            <option key={`${m.providerID}/${m.id}`} value={modelToSelectValue(m)}>
-                              {m.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="actions">
-                    <button type="button" className="pill-button" onClick={handleSave}>
-                      Save
-                    </button>
-                    <button type="button" className="pill-button" onClick={handleArchive}>
-                      Archive
-                    </button>
-                  </div>
-
-                  <label className="settings-field run-field">
-                    <span>Prompt</span>
-                    <div className="run-row">
-                      <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-                      <button type="button" className="pill-button" onClick={handleRun}>
-                        Run
-                      </button>
-                    </div>
-                  </label>
-                  {runStatus && <p className="run-status">Run: {runStatus}</p>}
-                  {runResult !== null && <pre className="log">{runResult}</pre>}
-                  {runHistory.length > 0 && (
-                    <div className="run-history">
-                      <h3>Run history</h3>
-                      <ul>
-                        {runHistory.map((run) => (
-                          <li key={run.id} className="card-row">
-                            <code>{run.status}</code> {run.prompt.slice(0, 60)}
-                            {typeof run.summary === "string" && run.summary.length > 0 && (
-                              <pre className="log">{run.summary.slice(0, 200)}</pre>
-                            )}
-                            {typeof run.error === "string" && run.error.length > 0 && (
-                              <pre className="log error">{run.error.slice(0, 200)}</pre>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  <div className="schedule-panel">
-                    <h3>Schedules</h3>
-                    <ul className="schedule-list">
-                      {schedules.length === 0 && <li className="muted">No scheduled runs</li>}
-                      {schedules.map((schedule) => (
-                        <li
-                          key={schedule.id}
-                          className={"card-row" + (schedule.enabled ? "" : " muted")}
-                        >
-                          <div className="schedule-row">
-                            <span className="schedule-trigger">
-                              {describeTrigger(schedule.trigger)}
-                            </span>
-                            <span className="schedule-prompt">{schedule.prompt.slice(0, 60)}</span>
-                          </div>
-                          <div className="schedule-meta">
-                            {schedule.enabled
-                              ? schedule.nextRunAt
-                                ? `next: ${new Date(schedule.nextRunAt).toLocaleString()}`
-                                : "no upcoming fire"
-                              : "paused"}
-                          </div>
-                          <div className="schedule-actions">
-                            <button
-                              type="button"
-                              onClick={() => void handleToggleSchedule(schedule)}
-                            >
-                              {schedule.enabled ? "Pause" : "Enable"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleShowScheduleHistory(schedule)}
-                            >
-                              History
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteSchedule(schedule)}
-                            >
-                              Delete
-                            </button>
-                            {schedule.conversationId &&
-                              conversations.some((c) => c.id === schedule.conversationId) && (
-                                <button
-                                  type="button"
-                                  onClick={() => selectConversation(schedule.conversationId!)}
-                                >
-                                  Open thread
-                                </button>
-                              )}
-                          </div>
-                          {scheduleHistory?.id === schedule.id && (
-                            <ul className="schedule-occurrences">
-                              {scheduleHistory.occurrences.length === 0 && (
-                                <li className="muted">No occurrences yet</li>
-                              )}
-                              {scheduleHistory.occurrences.map((occ) => (
-                                <li key={occ.id}>
-                                  <code>{occ.status}</code>{" "}
-                                  {new Date(occ.scheduledFor).toLocaleString()}
-                                  {occ.error ? ` — ${occ.error.slice(0, 80)}` : ""}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="schedule-new">
-                      <label>
-                        Schedule prompt
-                        <input
-                          value={schedulePrompt}
-                          placeholder="Prompt to run on schedule"
-                          onChange={(e) => setSchedulePrompt(e.target.value)}
-                        />
-                      </label>
-                      <label>
-                        Every (minutes)
-                        <input
-                          value={scheduleMinutes}
-                          inputMode="numeric"
-                          onChange={(e) => setScheduleMinutes(e.target.value)}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="pill-button"
-                        onClick={() => void handleCreateSchedule()}
-                      >
-                        Schedule run
-                      </button>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <h2>New bot</h2>
-                  <label className="settings-field">
-                    <span>Name</span>
-                    <input value={name} onChange={(e) => setName(e.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>Description</span>
-                    <input value={description} onChange={(e) => setDescription(e.target.value)} />
-                  </label>
-                  <label className="settings-field">
-                    <span>Persona</span>
-                    <textarea
-                      placeholder="Your bot's system prompt, this forms its AGENT.md"
-                      value={persona}
-                      onChange={(e) => setPersona(e.target.value)}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Model</span>
-                    <select
-                      value={selectionToSelectValue(botModelSelection)}
-                      onChange={(e) => {
-                        const selection = selectValueToSelection(e.target.value);
-                        if (selection) setBotModelSelection(selection);
-                      }}
-                    >
-                      <option value={APP_DEFAULT_KEY}>
-                        {defaultModelSelection.kind === "runtime-default"
-                          ? "Global Default"
-                          : "Use app default"}
-                      </option>
-                      {modelGroups.map(([provider, items]) => (
-                        <optgroup key={provider} label={provider}>
-                          {items.map((m) => (
-                            <option key={`${m.providerID}/${m.id}`} value={modelToSelectValue(m)}>
-                              {m.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="actions">
-                    <button type="button" className="pill-button" onClick={handleCreate}>
-                      Create
-                    </button>
-                  </div>
-                </>
-              )}
-            </section>
+            <BotEditor
+              selected={selected}
+              name={name}
+              onNameChange={setName}
+              description={description}
+              onDescriptionChange={setDescription}
+              persona={persona}
+              onPersonaChange={setPersona}
+              modelSelection={botModelSelection}
+              onModelSelect={setBotModelSelection}
+              defaultModelSelection={defaultModelSelection}
+              modelGroups={modelGroups}
+              onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
+              onSave={handleSave}
+              onArchive={handleArchive}
+              onCreate={handleCreate}
+              prompt={prompt}
+              onPromptChange={setPrompt}
+              onRun={handleRun}
+              runStatus={runStatus}
+              runResult={runResult}
+              runHistory={runHistory}
+              schedules={schedules}
+              scheduleHistory={scheduleHistory}
+              hasConversation={(id) => conversations.some((c) => c.id === id)}
+              onCreateSchedule={() => void handleCreateSchedule()}
+              onToggleSchedule={(schedule) => void handleToggleSchedule(schedule)}
+              onShowScheduleHistory={(schedule) => void handleShowScheduleHistory(schedule)}
+              onDeleteSchedule={(schedule) => void handleDeleteSchedule(schedule)}
+              onOpenScheduleThread={(conversationId) => selectConversation(conversationId)}
+              schedulePrompt={schedulePrompt}
+              onSchedulePromptChange={setSchedulePrompt}
+              scheduleMinutes={scheduleMinutes}
+              onScheduleMinutesChange={setScheduleMinutes}
+            />
           ) : (
             <>
-              <div className="chat-thread">
-                {activeConversation &&
-                  messages.map((m) =>
-                    m.senderType === "system" ? (
-                      <div key={m.id} className="message message-system">
-                        <span className="message-content">{m.content}</span>
-                        <time className="message-time">
-                          {new Date(m.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </time>
-                      </div>
-                    ) : (
-                      <div
-                        key={m.id}
-                        className={`message ${m.senderType === "human" ? "message-human" : "message-bot"}`}
-                      >
-                        {m.senderType === "bot" ? (
-                          <span className="message-identity">
-                            <BotAvatar id={m.senderId} size={22} />
-                            <span className="message-sender">{botName(m.senderId)}</span>
-                          </span>
-                        ) : (
-                          <span className="message-identity">
-                            <span className="message-sender">You</span>
-                          </span>
-                        )}
-                        <span className="message-content">{renderMentionContent(m.content)}</span>
-                        <time className="message-time">
-                          {new Date(m.createdAt).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </time>
-                      </div>
-                    ),
-                  )}
-                {activeConversation && pendingReply && <div className="typing">{typingLabel}</div>}
-                {threadNotice !== null && <div className="thread-notice">{threadNotice}</div>}
-                {!activeConversation && (
-                  <p className="thread-empty-hint">
-                    No session selected — say hello to start one with{" "}
-                    {headerBot?.name ?? "this bot"}.
-                  </p>
-                )}
-                <div ref={threadEndRef} />
-              </div>
-              <form
-                className="composer"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleSendMessage();
-                }}
-              >
-                {mentionQuery !== null && mentionSuggestions.length > 0 && (
-                  <div
-                    className="mention-popup mention-frame mention-menu"
-                    role="listbox"
-                    aria-label="Mention suggestions"
-                    data-testid="mention-suggestions"
-                  >
-                    <ul className="mention-suggestions">
-                      {mentionSuggestions.map((b, i) => (
-                        <li key={b.id}>
-                          <button
-                            type="button"
-                            className={
-                              "mention-option" + (i === mentionIndex ? " highlighted" : "")
-                            }
-                            aria-selected={i === mentionIndex}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => selectMention(b)}
-                          >
-                            {b.name}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="icon-pill-button"
-                  aria-label="New session"
-                  title="New session"
-                  onClick={() => void handleNewConversation()}
-                >
-                  <Plus size={24} strokeWidth={2.6} aria-hidden />
-                </button>
-                <input
-                  ref={composerInputRef}
-                  value={draft}
-                  placeholder={composerPlaceholder}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setDraft(value);
-                    const caret = e.target.selectionStart ?? value.length;
-                    const idx = value.lastIndexOf("@", caret - 1);
-                    if (idx !== -1) {
-                      const between = value.slice(idx + 1, caret);
-                      if (!/\s/.test(between)) {
-                        if (idx === 0 || /\s/.test(value[idx - 1] ?? "")) {
-                          setMentionQuery(between);
-                          setMentionStart(idx);
-                          setMentionIndex(0);
-                        } else {
-                          setMentionQuery(null);
-                          setMentionStart(null);
-                        }
-                      } else {
-                        setMentionQuery(null);
-                        setMentionStart(null);
-                      }
-                    } else {
-                      setMentionQuery(null);
-                      setMentionStart(null);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (mentionQuery !== null && mentionSuggestions.length > 0) {
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setMentionIndex((i) => (i + 1) % mentionSuggestions.length);
-                        return;
-                      }
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setMentionIndex(
-                          (i) => (i - 1 + mentionSuggestions.length) % mentionSuggestions.length,
-                        );
-                        return;
-                      }
-                      if (e.key === "Enter" || e.key === "Tab") {
-                        e.preventDefault();
-                        const chosen = mentionSuggestions[mentionIndex] ?? mentionSuggestions[0];
-                        if (chosen) selectMention(chosen);
-                        return;
-                      }
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        setMentionQuery(null);
-                        setMentionStart(null);
-                        return;
-                      }
-                    }
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void handleSendMessage();
-                    }
-                  }}
-                />
-                <button type="submit" className="icon-send" aria-label="Send" title="Send">
-                  <ArrowUp size={24} strokeWidth={3} aria-hidden />
-                </button>
-              </form>
+              <MessageThread
+                messages={messages}
+                hasActiveConversation={activeConversation !== null}
+                bots={bots}
+                pendingReply={pendingReply}
+                typingLabel={typingLabel}
+                threadNotice={threadNotice}
+                emptyHintBotName={headerBot?.name ?? "this bot"}
+                endRef={threadEndRef}
+              />
+              <Composer
+                draft={draft}
+                placeholder={composerPlaceholder}
+                inputRef={composerInputRef}
+                mentionQuery={mentions.mentionQuery}
+                mentionSuggestions={mentions.mentionSuggestions}
+                mentionIndex={mentions.mentionIndex}
+                onSelectMention={mentions.selectMention}
+                onInputChange={mentions.handleInputChange}
+                onKeyDown={mentions.handleKeyDown}
+                onSubmit={() => void handleSendMessage()}
+              />
             </>
           )}
         </section>
       </div>
 
-      {globalSettingsOpen && (
-        <div
-          className="settings-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Global settings"
-        >
-          <section className="global-settings">
-            <div className="overlay-head">
-              <h2>Global settings</h2>
-              <button
-                type="button"
-                className="icon-pill-button"
-                aria-label="Close global settings"
-                onClick={() => setGlobalSettingsOpen(false)}
-              >
-                <X size={22} strokeWidth={2.6} aria-hidden />
-              </button>
-            </div>
-            <label className="settings-field">
-              <span>Default model (bots without an override)</span>
-              <select
-                value={selectionToSelectValue(defaultModelSelection)}
-                onChange={(e) => {
-                  const selection = selectValueToSelection(e.target.value);
-                  if (selection) setDefaultModelSelection(selection);
-                }}
-              >
-                <option value={RUNTIME_DEFAULT_KEY}>OpenCode default</option>
-                {modelGroups.map(([provider, items]) => (
-                  <optgroup key={provider} label={provider}>
-                    {items.map((m) => (
-                      <option key={`${m.providerID}/${m.id}`} value={modelToSelectValue(m)}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            <div className="actions">
-              <button type="button" className="pill-button" onClick={() => void saveAppSettings()}>
-                Save settings
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <GlobalSettingsOverlay
+        open={globalSettingsOpen}
+        defaultModelSelection={defaultModelSelection}
+        onSelectDefaultModel={setDefaultModelSelection}
+        modelGroups={modelGroups}
+        onSave={() => void saveAppSettings()}
+        onClose={() => setGlobalSettingsOpen(false)}
+      />
     </main>
   );
 }
