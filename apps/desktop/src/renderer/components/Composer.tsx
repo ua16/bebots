@@ -12,10 +12,11 @@ interface ComposerProps {
   readonly onSelectMention: (bot: BebotsBot) => void;
   readonly onInputChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
   readonly onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+  readonly onNewSession: () => void;
   readonly onSubmit: () => void;
 }
 
-/** Composer: mention popup, auto-growing textarea, and send/attach toolbar. */
+/** Composer: mention popup, new-session pill, auto-growing textarea, send button. */
 export function Composer({
   draft,
   placeholder,
@@ -26,6 +27,7 @@ export function Composer({
   onSelectMention,
   onInputChange,
   onKeyDown,
+  onNewSession,
   onSubmit,
 }: ComposerProps) {
   return (
@@ -60,6 +62,15 @@ export function Composer({
           </ul>
         </div>
       )}
+      <button
+        type="button"
+        className="icon-pill-button"
+        aria-label="New session"
+        title="New session"
+        onClick={onNewSession}
+      >
+        <Plus size={24} strokeWidth={2.6} aria-hidden />
+      </button>
       <textarea
         ref={inputRef}
         value={draft}
@@ -68,20 +79,9 @@ export function Composer({
         onChange={onInputChange}
         onKeyDown={onKeyDown}
       />
-      <div className="composer-toolbar">
-        <button type="submit" className="icon-send" aria-label="Send" title="Send">
-          <ArrowUp size={19} strokeWidth={2.4} aria-hidden />
-        </button>
-        <button
-          type="button"
-          className="icon-pill-button"
-          aria-label="Attach file"
-          title="Attach file"
-          onClick={() => {}}
-        >
-          <Plus size={19} strokeWidth={2.1} aria-hidden />
-        </button>
-      </div>
+      <button type="submit" className="icon-send" aria-label="Send" title="Send">
+        <ArrowUp size={24} strokeWidth={3} aria-hidden />
+      </button>
     </form>
   );
 }

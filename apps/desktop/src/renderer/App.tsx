@@ -766,6 +766,7 @@ export function App() {
                 onSelectMention={mentions.selectMention}
                 onInputChange={mentions.handleInputChange}
                 onKeyDown={mentions.handleKeyDown}
+                onNewSession={() => void handleNewConversation()}
                 onSubmit={() => void handleSendMessage()}
               />
             </>

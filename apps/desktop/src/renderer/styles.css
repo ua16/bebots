@@ -456,22 +456,24 @@ body,
   outline-offset: -1px;
 }
 
-.composer input {
+.composer textarea {
   flex: 1;
   min-width: 0;
+  box-sizing: border-box;
   padding: 0.55rem 0.4rem;
   border: none;
   background: transparent;
   color: var(--text);
   font: inherit;
   font-size: 20px;
+  resize: none;
 }
 
-.composer input::placeholder {
+.composer textarea::placeholder {
   color: var(--muted);
 }
 
-.composer input:focus {
+.composer textarea:focus {
   outline: none;
 }
 
