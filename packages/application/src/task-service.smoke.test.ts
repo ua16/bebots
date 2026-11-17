@@ -27,6 +27,16 @@ function makeTaskRepo(): TaskRepository {
       store.set(String(task.id), task);
       return Effect.succeed(task);
     },
+    deleteByBot: (botId) => {
+      let removed = 0;
+      for (const [id, task] of [...store]) {
+        if (task.assignee === botId || task.requester === botId) {
+          store.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
     delete: (id) => {
       store.delete(String(id));
       return Effect.void;
@@ -77,6 +87,8 @@ function makeRunRepo(): RunRepository {
     },
     appendEvent: () => Effect.void,
     listEvents: () => Effect.succeed([]),
+    deleteByBot: () => Effect.succeed(0),
+    deleteByConversation: () => Effect.succeed(0),
   };
 }
 
@@ -100,6 +112,7 @@ describe("TaskService smoke", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     };
     const runService = new RunService({
       runRepo,

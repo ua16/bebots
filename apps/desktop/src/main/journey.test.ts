@@ -115,6 +115,27 @@ describe("user journey over the live HTTP API", () => {
     app?.dispose();
   });
 
+  it("deleting a bot removes it from the API", async () => {
+    const bot = await createBot(app, "doomed-bot");
+    const del = await api(app, "DELETE", `/api/v1/bots/${bot.id}`);
+    expect(del.status).toBeGreaterThanOrEqual(200);
+    expect(del.status).toBeLessThan(300);
+    const get = await api(app, "GET", `/api/v1/bots/${bot.id}`);
+    expect(get.status).toBe(404);
+  });
+
+  it("deleting a session removes it from the API", async () => {
+    const conv = await api(app, "POST", "/api/v1/conversations", {});
+    const cid = (conv.body as { id: string }).id;
+    const created = await api(app, "POST", `/api/v1/conversations/${cid}/sessions`, {
+      runtimeSessionId: "rt-1",
+    });
+    const sid = (created.body as { id: string }).id;
+    const del = await api(app, "DELETE", `/api/v1/sessions/${sid}`);
+    expect(del.status).toBeGreaterThanOrEqual(200);
+    expect(del.status).toBeLessThan(300);
+  });
+
   it("bots, conversation, schedules, settings — then a restart keeps everything", async () => {
     // Pop order is deterministic: msg1, msg2, the interval run (inserted and
     // due before the one-shot), the one-shot run, the manual run, the failing

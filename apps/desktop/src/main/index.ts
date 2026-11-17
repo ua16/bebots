@@ -20,6 +20,7 @@ import {
 import {
   AppSettingsService,
   BotService,
+  BotDeletionService,
   RunService,
   ConversationService,
   ConversationSessionService,
@@ -140,6 +141,7 @@ async function setupBotService(): Promise<void> {
   const conversationService = new ConversationService({
     conversationRepo,
     messageRepo,
+    sessionRepo: conversationSessionRepo,
     clock: { now: () => Date.now() },
     ids: { generate: () => randomUUID() },
   });
@@ -233,6 +235,25 @@ async function setupBotService(): Promise<void> {
     showSchedulingLogs,
   });
   runService.setScheduleResults(scheduleService);
+
+  // Bot deletion orchestrates every store a bot owns (runs, schedules,
+  // sessions, tasks, file index, workspace home, conversations) — see
+  // BotDeletionService for the ordering invariants.
+  const botDeletionService = new BotDeletionService({
+    botRepo: repo,
+    conversationRepo,
+    runRepo,
+    sessionRepo: conversationSessionRepo,
+    taskRepo,
+    fileIndex: fileIndexRepo,
+    activity: activityRepo,
+    workspace,
+    runService,
+    scheduleService,
+    coordinator: conversationCoordinator,
+    clock: { now: () => Date.now() },
+    ids: { generate: () => randomUUID() },
+  });
 
   // Remote MCP server (Approach B): in-process, exposed over HTTP at /mcp.
   const mcp = await createMcpServer({
@@ -502,6 +523,7 @@ async function setupBotService(): Promise<void> {
   // HTTP server
   const routes = makeRoutes({
     botService: service,
+    botDeletion: botDeletionService,
     runService,
     conversationService,
     conversationSessionService,

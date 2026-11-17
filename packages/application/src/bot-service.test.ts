@@ -36,6 +36,7 @@ describe("BotService", () => {
         return Effect.void;
       },
       homePath: (id) => `/tmp/bots/${id}`,
+      removeHome: () => Effect.void,
     };
     const clock: Clock = { now: () => 42 };
     const ids: IdGenerator = { generate: () => "bot-1" };
@@ -73,6 +74,7 @@ describe("BotService", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/${id}`,
+      removeHome: () => Effect.void,
     };
     const service = new BotService({
       repo,

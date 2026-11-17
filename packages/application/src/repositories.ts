@@ -34,12 +34,16 @@ export interface BotRepository {
   readonly delete: (id: BotId) => Effect.Effect<void, RepositoryError | NotFoundError>;
 }
 
+/** Result of a bulk delete: how many rows the statement removed. */
+export type DeleteCount = number;
+
 export interface RunRepository {
   readonly create: (run: Run) => Effect.Effect<Run, RepositoryError>;
   readonly findById: (id: RunId) => Effect.Effect<Run | null, RepositoryError>;
   readonly findAll: (options?: {
     readonly botId?: BotId;
     readonly status?: RunStatus;
+    readonly conversationId?: ConversationId;
     readonly limit?: number;
   }) => Effect.Effect<readonly Run[], RepositoryError>;
   readonly update: (run: Run) => Effect.Effect<Run, RepositoryError | NotFoundError>;
@@ -53,6 +57,12 @@ export interface RunRepository {
     readonly { readonly tag: string; readonly payload: unknown; readonly createdAt: number }[],
     RepositoryError
   >;
+  /** Delete every run of a bot and its run_events; returns the run rows deleted. */
+  readonly deleteByBot: (botId: BotId) => Effect.Effect<DeleteCount, RepositoryError>;
+  /** Delete every run in a conversation (any bot) and its run_events; returns run rows deleted. */
+  readonly deleteByConversation: (
+    conversationId: ConversationId,
+  ) => Effect.Effect<DeleteCount, RepositoryError>;
 }
 
 export interface ConversationRepository {
@@ -82,6 +92,10 @@ export interface MessageRepository {
   }) => Effect.Effect<readonly Message[], RepositoryError>;
   readonly update: (message: Message) => Effect.Effect<Message, RepositoryError | NotFoundError>;
   readonly delete: (id: MessageId) => Effect.Effect<void, RepositoryError | NotFoundError>;
+  /** Delete every message of a conversation; returns rows deleted (0 when none). */
+  readonly deleteByConversation: (
+    conversationId: ConversationId,
+  ) => Effect.Effect<DeleteCount, RepositoryError>;
 }
 
 export interface ConversationSessionRepository {
@@ -110,6 +124,12 @@ export interface ConversationSessionRepository {
   readonly delete: (
     id: ConversationSessionId,
   ) => Effect.Effect<void, RepositoryError | NotFoundError>;
+  /** Delete every session record of a conversation (all bots); returns rows deleted. */
+  readonly deleteByConversation: (
+    conversationId: ConversationId,
+  ) => Effect.Effect<DeleteCount, RepositoryError>;
+  /** Delete every session record scoped to a bot, across conversations; returns rows deleted. */
+  readonly deleteByBot: (botId: BotId) => Effect.Effect<DeleteCount, RepositoryError>;
 }
 
 export interface FileIndexEntry {
@@ -136,6 +156,8 @@ export interface FileIndexRepository {
     botId: BotId,
     pathPrefix: string,
   ) => Effect.Effect<number, RepositoryError>;
+  /** Remove every indexed entry of a bot (bot deletion); returns rows deleted. */
+  readonly removeByBot: (botId: BotId) => Effect.Effect<number, RepositoryError>;
   readonly search: (
     query: string,
     botId?: BotId,
@@ -154,6 +176,12 @@ export interface TaskRepository {
   readonly update: (task: Task) => Effect.Effect<Task, RepositoryError | NotFoundError>;
   readonly delete: (id: TaskId) => Effect.Effect<void, RepositoryError | NotFoundError>;
   readonly findByIdempotencyKey: (key: string) => Effect.Effect<Task | null, RepositoryError>;
+  /**
+   * Delete every task whose requester or assignee is the given bot (bot
+   * deletion); returns rows deleted. Tasks reference their bot only through
+   * these two string columns.
+   */
+  readonly deleteByBot: (botId: BotId) => Effect.Effect<DeleteCount, RepositoryError>;
 }
 
 export interface ActivityRepository {
@@ -164,6 +192,11 @@ export interface ActivityRepository {
     readonly entityId?: string;
     readonly limit?: number;
   }) => Effect.Effect<readonly ActivityEvent[], RepositoryError>;
+  /** Delete all events of an entity type for the given entity ids; returns rows deleted. */
+  readonly deleteByEntityIds: (
+    entityType: string,
+    entityIds: readonly string[],
+  ) => Effect.Effect<DeleteCount, RepositoryError>;
 }
 
 /**
@@ -178,6 +211,7 @@ export interface ScheduleRepository {
     readonly botId?: BotId;
     readonly enabled?: boolean;
     readonly createdBy?: string;
+    readonly conversationId?: string;
     readonly limit?: number;
   }) => Effect.Effect<readonly Schedule[], RepositoryError>;
   /** Enabled schedules with nextRunAt due (<= now). */
@@ -230,4 +264,6 @@ export interface BotWorkspace {
   readonly ensureHome: (botId: BotId) => Effect.Effect<string, WorkspaceError>;
   readonly writePersona: (botId: BotId, persona: string) => Effect.Effect<void, WorkspaceError>;
   readonly homePath: (botId: BotId) => string;
+  /** Remove a bot's home directory (persona, notes, memory, logs) before deleting its record. */
+  readonly removeHome: (botId: BotId) => Effect.Effect<void, WorkspaceError>;
 }

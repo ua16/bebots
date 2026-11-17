@@ -158,6 +158,8 @@ function makeRunRepo(): RunRepository & { readonly runs: Map<string, Run> } {
     },
     appendEvent: () => Effect.void,
     listEvents: () => Effect.succeed([]),
+    deleteByBot: () => Effect.succeed(0),
+    deleteByConversation: () => Effect.succeed(0),
   };
 }
 
@@ -174,6 +176,7 @@ function makeRunService(
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     } as BotWorkspace,
     runtime,
     clock: { now: () => Date.now() },

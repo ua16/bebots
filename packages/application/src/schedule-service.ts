@@ -300,11 +300,13 @@ export class ScheduleService implements ScheduleResultRecorder {
   listSchedules(options?: {
     readonly botId?: string;
     readonly createdBy?: string;
+    readonly conversationId?: string;
     readonly limit?: number;
   }): Effect.Effect<readonly Schedule[], RepositoryError> {
     return this.scheduleRepo.findAll({
       ...(options?.botId !== undefined ? { botId: asBotId(options.botId) } : {}),
       ...(options?.createdBy !== undefined ? { createdBy: options.createdBy } : {}),
+      ...(options?.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
       ...(options?.limit !== undefined ? { limit: options.limit } : {}),
     });
   }

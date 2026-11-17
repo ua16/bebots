@@ -485,6 +485,55 @@ export class RunService {
     });
   }
 
+  /**
+   * Cancel every queued/running run of one bot (bot deletion prep): in-flight
+   * runtime handles stop first so finalization cannot write rows or replies
+   * afterwards. Individual failures are ignored — a run that already finished
+   * (or whose row vanished) must not abort the sweep.
+   */
+  cancelRunsForBot(botId: BotId): Effect.Effect<void, RepositoryError> {
+    const self = this;
+    return Effect.gen(function* () {
+      for (const status of ["queued", "running"] as const) {
+        const runs = yield* self.runRepo
+          .findAll({ botId, status })
+          .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
+        for (const run of runs) {
+          yield* self.cancelRun(run.id).pipe(Effect.ignore);
+        }
+      }
+    });
+  }
+
+  /**
+   * Cancel every queued/running run bound to a conversation (any bot) —
+   * conversation deletion prep. Same failure policy as `cancelRunsForBot`.
+   */
+  cancelRunsForConversation(conversationId: ConversationId): Effect.Effect<void, RepositoryError> {
+    const self = this;
+    return Effect.gen(function* () {
+      for (const status of ["queued", "running"] as const) {
+        const runs = yield* self.runRepo
+          .findAll({ conversationId, status })
+          .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
+        for (const run of runs) {
+          yield* self.cancelRun(run.id).pipe(Effect.ignore);
+        }
+      }
+    });
+  }
+
+  /**
+   * Delete every run row (and its events) bound to a conversation — the
+   * thread's history dies with the thread. Call only after
+   * `cancelRunsForConversation`, so nothing can finalize into deleted rows.
+   */
+  deleteRunsForConversation(
+    conversationId: ConversationId,
+  ): Effect.Effect<number, RepositoryError> {
+    return this.runRepo.deleteByConversation(conversationId);
+  }
+
   awaitRun(id: RunId, timeoutMs = 300_000): Effect.Effect<Run | null, RepositoryError> {
     const self = this;
     return Effect.gen(function* () {

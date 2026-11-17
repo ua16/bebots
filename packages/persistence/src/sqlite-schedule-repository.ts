@@ -134,6 +134,7 @@ export class SqliteScheduleRepository implements ScheduleRepository {
     readonly botId?: string;
     readonly enabled?: boolean;
     readonly createdBy?: string;
+    readonly conversationId?: string;
     readonly limit?: number;
   }): Effect.Effect<readonly Schedule[], RepositoryError> {
     const db = this.db;
@@ -152,6 +153,10 @@ export class SqliteScheduleRepository implements ScheduleRepository {
         if (options?.createdBy !== undefined) {
           clauses.push("created_by = ?");
           params.push(options.createdBy);
+        }
+        if (options?.conversationId !== undefined) {
+          clauses.push("conversation_id = ?");
+          params.push(options.conversationId);
         }
         const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
         const limit = options?.limit ? `LIMIT ${Number(options.limit)}` : "";

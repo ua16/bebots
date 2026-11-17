@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { Task, TaskId, TaskStatus } from "@bebots/domain";
+import type { Task, TaskId, TaskStatus, BotId } from "@bebots/domain";
 import { asTaskId } from "@bebots/domain";
 import type { TaskRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
@@ -168,6 +168,17 @@ export class SqliteTaskRepository implements TaskRepository {
         catch: (cause) => new RepositoryError("Failed to delete task", cause),
       });
       if (result === 0) return yield* Effect.fail(new NotFoundError("Task", String(id)));
+    });
+  }
+
+  deleteByBot(botId: BotId): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    return Effect.try({
+      try: () =>
+        db
+          .prepare("DELETE FROM tasks WHERE assignee = ? OR requester = ?")
+          .run(String(botId), String(botId)).changes,
+      catch: (cause) => new RepositoryError("Failed to delete bot tasks", cause),
     });
   }
 

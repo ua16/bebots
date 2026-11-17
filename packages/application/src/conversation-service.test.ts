@@ -1,22 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
 import { Cause, Effect, Exit, Stream } from "effect";
-import type { ConversationSession, ConversationSessionId, Run } from "@bebots/domain";
-import { asBotId, asConversationId, asConversationSessionId } from "@bebots/domain";
-import { ConversationSessionService } from "./conversation-service.js";
+import type {
+  Conversation,
+  ConversationSession,
+  ConversationSessionId,
+  Message,
+  Run,
+} from "@bebots/domain";
+import { asBotId, asConversationId, asConversationSessionId, asMessageId } from "@bebots/domain";
+import { ConversationService, ConversationSessionService } from "./conversation-service.js";
 import { RunService } from "./run-service.js";
 import { NotFoundError, ValidationError } from "./errors.js";
 import type {
   BotRepository,
   BotWorkspace,
   Clock,
+  ConversationRepository,
   ConversationSessionRepository,
   IdGenerator,
+  MessageRepository,
   RunRepository,
 } from "./repositories.js";
 import type { AgentRuntime, RunHandle, RunRequest, RunResult, RuntimeEvent } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // In-memory ConversationSessionRepository
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 function makeSessionRepo(): ConversationSessionRepository {
@@ -53,6 +62,26 @@ function makeSessionRepo(): ConversationSessionRepository {
       sessions.set(session.id, session);
       return Effect.succeed(session);
     },
+    deleteByConversation: (conversationId) => {
+      let removed = 0;
+      for (const [id, s] of [...sessions]) {
+        if (String(s.conversationId) === String(conversationId)) {
+          sessions.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
+    deleteByBot: (botId) => {
+      let removed = 0;
+      for (const [id, s] of [...sessions]) {
+        if (s.botId !== null && String(s.botId) === String(botId)) {
+          sessions.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
     delete: (id) => {
       if (!sessions.delete(id)) {
         return Effect.fail(new NotFoundError("ConversationSession", String(id)));
@@ -61,6 +90,154 @@ function makeSessionRepo(): ConversationSessionRepository {
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// ConversationService.deleteConversation cascade
+// ---------------------------------------------------------------------------
+
+describe("ConversationService.deleteConversation", () => {
+  const clock: Clock = { now: () => 1_000 };
+  const ids: IdGenerator = { generate: () => "gen-1" };
+
+  function makeStores() {
+    const conversations = new Map<string, Conversation>();
+    const messages = new Map<string, Message>();
+    const sessions = new Map<string, ConversationSession>();
+    const conversationRepo: ConversationRepository = {
+      create: (c) => {
+        conversations.set(String(c.id), c);
+        return Effect.succeed(c);
+      },
+      findById: (id) => Effect.succeed(conversations.get(String(id)) ?? null),
+      findAll: () => Effect.succeed([...conversations.values()]),
+      update: (c) => {
+        conversations.set(String(c.id), c);
+        return Effect.succeed(c);
+      },
+      delete: (id) => {
+        conversations.delete(String(id));
+        return Effect.void;
+      },
+    };
+    const messageRepo: MessageRepository = {
+      create: (m) => {
+        messages.set(String(m.id), m);
+        return Effect.succeed(m);
+      },
+      findById: (id) => Effect.succeed(messages.get(String(id)) ?? null),
+      findByConversation: (conversationId) =>
+        Effect.succeed(
+          [...messages.values()].filter((m) => String(m.conversationId) === String(conversationId)),
+        ),
+      findAll: () => Effect.succeed([...messages.values()]),
+      update: (m) => Effect.succeed(m),
+      deleteByConversation: (conversationId) => {
+        let removed = 0;
+        for (const [id, m] of [...messages]) {
+          if (String(m.conversationId) === String(conversationId)) {
+            messages.delete(id);
+            removed++;
+          }
+        }
+        return Effect.succeed(removed);
+      },
+      delete: (id) => {
+        messages.delete(String(id));
+        return Effect.void;
+      },
+    };
+    const sessionRepo: ConversationSessionRepository = {
+      create: (s) => {
+        sessions.set(String(s.id), s);
+        return Effect.succeed(s);
+      },
+      findById: (id) => Effect.succeed(sessions.get(String(id)) ?? null),
+      findLatestByConversation: (_cid, _opts) => Effect.succeed(null),
+      findAll: () => Effect.succeed([...sessions.values()]),
+      update: (s) => Effect.succeed(s),
+      deleteByConversation: (conversationId) => {
+        let removed = 0;
+        for (const [id, s] of [...sessions]) {
+          if (String(s.conversationId) === String(conversationId)) {
+            sessions.delete(id);
+            removed++;
+          }
+        }
+        return Effect.succeed(removed);
+      },
+      deleteByBot: (_botId) => Effect.succeed(0),
+      delete: (id) => {
+        sessions.delete(String(id));
+        return Effect.void;
+      },
+    };
+    return { conversations, messages, sessions, conversationRepo, messageRepo, sessionRepo };
+  }
+
+  it("purges messages and sessions together with the conversation row", async () => {
+    const stores = makeStores();
+    const service = new ConversationService({
+      conversationRepo: stores.conversationRepo,
+      messageRepo: stores.messageRepo,
+      sessionRepo: stores.sessionRepo,
+      clock,
+      ids,
+    });
+    await Effect.runPromise(
+      service.createConversation({ title: "thread", participants: ["bot-1", "human"] }),
+    );
+    await Effect.runPromise(service.addMessage({ conversationId: "gen-1", content: "hello" }));
+    await Effect.runPromise(
+      stores.sessionRepo.create({
+        id: asConversationSessionId("sess-1"),
+        conversationId: asConversationId("gen-1"),
+        runtimeSessionId: "rt-1",
+        botId: "bot-1",
+        status: "active",
+        lastUsedAt: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+
+    await Effect.runPromise(service.deleteConversation("gen-1"));
+
+    expect(stores.conversations.has("gen-1")).toBe(false);
+    expect(stores.messages.size).toBe(0);
+    expect(stores.sessions.size).toBe(0);
+  });
+
+  it("still purges children of orphaned threads and fails NotFound", async () => {
+    const stores = makeStores();
+    const service = new ConversationService({
+      conversationRepo: stores.conversationRepo,
+      messageRepo: stores.messageRepo,
+      sessionRepo: stores.sessionRepo,
+      clock,
+      ids,
+    });
+    // Orphan children without a conversation row (e.g. previous partial delete).
+    await Effect.runPromise(
+      stores.messageRepo.create({
+        id: asMessageId("m-1"),
+        conversationId: asConversationId("ghost"),
+        senderType: "human",
+        content: "stranded",
+        deliveryState: "delivered",
+        createdAt: 1,
+      }),
+    );
+
+    const exit = await Effect.runPromiseExit(service.deleteConversation("ghost"));
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(NotFoundError);
+    }
+    // The stranded children did not survive the attempt.
+    expect(stores.messages.size).toBe(0);
+    expect(stores.sessions.size).toBe(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // ConversationSessionService lifecycle
@@ -207,6 +384,8 @@ describe("RunService conversation resume contract", () => {
       },
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
   }
 
@@ -232,6 +411,7 @@ describe("RunService conversation resume contract", () => {
     ensureHome: () => Effect.succeed("/tmp/bots"),
     writePersona: () => Effect.void,
     homePath: () => "/tmp/bots/bot-1",
+    removeHome: () => Effect.void,
   };
 
   function makeRuntime(

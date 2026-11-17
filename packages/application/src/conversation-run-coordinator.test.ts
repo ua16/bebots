@@ -55,6 +55,16 @@ function makeMessageRepo(): MessageRepository {
     },
     findAll: () => Effect.succeed([...store.values()]),
     update: (m) => Effect.succeed(m),
+    deleteByConversation: (conversationId) => {
+      let removed = 0;
+      for (const [id, m] of [...store]) {
+        if (String(m.conversationId) === String(conversationId)) {
+          store.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
     delete: (id) => {
       store.delete(String(id));
       return Effect.void;
@@ -85,6 +95,26 @@ function makeSessionRepo(): ConversationSessionRepository {
         [...sessions.values()].filter((s) => !filter?.status || s.status === filter.status),
       ),
     update: (s) => Effect.succeed(s),
+    deleteByConversation: (conversationId) => {
+      let removed = 0;
+      for (const [id, s] of [...sessions]) {
+        if (String(s.conversationId) === String(conversationId)) {
+          sessions.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
+    deleteByBot: (botId) => {
+      let removed = 0;
+      for (const [id, s] of [...sessions]) {
+        if (s.botId !== null && String(s.botId) === String(botId)) {
+          sessions.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
     delete: (id) => {
       sessions.delete(String(id));
       return Effect.void;
@@ -115,24 +145,71 @@ const workspace: BotWorkspace = {
   ensureHome: () => Effect.succeed("/tmp/bots"),
   writePersona: () => Effect.void,
   homePath: () => "/tmp/bots/bot-1",
+  removeHome: () => Effect.void,
 };
 
-function makeRunRepo(): RunRepository {
+function makeRunRepo(): {
+  readonly repo: RunRepository;
+  readonly store: Map<string, Run>;
+  readonly events: Map<string, unknown[]>;
+} {
   const store = new Map<string, Run>();
-  return {
+  const events = new Map<string, unknown[]>();
+  const repo: RunRepository = {
     create: (run) => {
       store.set(String(run.id), run);
       return Effect.succeed(run);
     },
     findById: (id) => Effect.succeed(store.get(String(id)) ?? null),
-    findAll: () => Effect.succeed([...store.values()]),
+    findAll: (options) =>
+      Effect.succeed(
+        [...store.values()].filter(
+          (r) =>
+            (!options?.botId || String(r.botId) === String(options.botId)) &&
+            (!options?.status || r.status === options.status) &&
+            (!options?.conversationId ||
+              (r.conversationId !== undefined &&
+                String(r.conversationId) === String(options.conversationId))),
+        ),
+      ),
     update: (run) => {
       store.set(String(run.id), run);
       return Effect.succeed(run);
     },
-    appendEvent: () => Effect.void,
+    appendEvent: (runId, event) => {
+      const arr = events.get(String(runId)) ?? [];
+      arr.push(event);
+      events.set(String(runId), arr);
+      return Effect.void;
+    },
     listEvents: () => Effect.succeed([]),
+    deleteByBot: (botId) => {
+      let removed = 0;
+      for (const [id, run] of [...store]) {
+        if (String(run.botId) === String(botId)) {
+          store.delete(id);
+          events.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
+    deleteByConversation: (conversationId) => {
+      let removed = 0;
+      for (const [id, run] of [...store]) {
+        if (
+          run.conversationId !== undefined &&
+          String(run.conversationId) === String(conversationId)
+        ) {
+          store.delete(id);
+          events.delete(id);
+          removed++;
+        }
+      }
+      return Effect.succeed(removed);
+    },
   };
+  return { repo, store, events };
 }
 
 function makeRuntime(overrides: Partial<Pick<AgentRuntime, "startRun">> = {}): AgentRuntime {
@@ -152,6 +229,8 @@ interface TestEnv {
   readonly coordinator: ConversationRunCoordinator;
   readonly conversationService: ConversationService;
   readonly sessions: ConversationSessionService;
+  /** The run rows the env's RunService persists, for purge assertions. */
+  readonly runStore: Map<string, Run>;
 }
 
 /** `participantBots` controls which participants the fake bot repo knows. */
@@ -173,8 +252,9 @@ function makeEnv(
     clock: fixedClock,
     ids,
   });
+  const runRepo = makeRunRepo();
   const runService = new RunService({
-    runRepo: makeRunRepo(),
+    runRepo: runRepo.repo,
     botRepo: options.botLedger ?? botRepo,
     workspace,
     runtime,
@@ -188,7 +268,7 @@ function makeEnv(
     botRepo: options.botLedger ?? botRepo,
     clock: fixedClock,
   });
-  return { coordinator, conversationService, sessions };
+  return { coordinator, conversationService, sessions, runStore: runRepo.store };
 }
 
 async function seedConversation(env: TestEnv, participants: readonly string[]): Promise<void> {
@@ -267,12 +347,58 @@ describe("ConversationRunCoordinator", () => {
 describe("ConversationRunCoordinator.recordBotReply", () => {
   it("persists the run summary as a bot reply from the run's bot", async () => {
     const env = makeEnv([], makeRuntime());
+    await seedConversation(env, []);
     await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-1", "the answer"));
     const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
     expect(thread).toHaveLength(1);
     expect(thread[0]?.senderType).toBe("bot");
     expect(thread[0]?.senderId).toBe("bot-1");
     expect(thread[0]?.content).toBe("the answer");
+  });
+
+  it("drops replies into conversations that no longer exist (deleted during the run)", async () => {
+    const env = makeEnv([], makeRuntime());
+    // No conversation was ever created (e.g. deleted while the run was in
+    // flight): the reply must not resurrect orphaned message rows.
+    await Effect.runPromise(env.coordinator.recordBotReply(conversationId, "bot-1", "late answer"));
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(0);
+  });
+});
+
+describe("ConversationRunCoordinator.deleteConversation", () => {
+  it("purges messages, runs and the conversation, then rejects further sends", async () => {
+    const env = makeEnv([], makeRuntime());
+    await seedConversation(env, ["bot-1", "human"]);
+    const sent = await Effect.runPromise(
+      env.coordinator.sendMessage({ conversationId, content: "hello", senderType: "human" }),
+    );
+    expect(sent.run).not.toBeNull();
+    // The run row references the thread before deletion.
+    expect([...env.runStore.keys()]).toHaveLength(1);
+
+    await Effect.runPromise(env.coordinator.deleteConversation(conversationId));
+
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(0);
+    // The thread's run rows (and their events) died with it.
+    expect([...env.runStore.keys()]).toHaveLength(0);
+    const exit = await Effect.runPromiseExit(
+      env.coordinator.sendMessage({ conversationId, content: "anyone there?" }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(NotFoundError);
+    }
+  });
+
+  it("fails NotFound when the conversation does not exist", async () => {
+    const env = makeEnv([], makeRuntime());
+    const exit = await Effect.runPromiseExit(env.coordinator.deleteConversation("missing"));
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(NotFoundError);
+    }
   });
 });
 
@@ -309,7 +435,7 @@ describe("duplicate reply runs", () => {
       ids,
     });
     const runService = new RunService({
-      runRepo: makeRunRepo(),
+      runRepo: makeRunRepo().repo,
       botRepo: twoBotRepo,
       workspace,
       runtime,

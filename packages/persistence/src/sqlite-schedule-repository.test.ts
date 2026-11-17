@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import { asBotId, asRunId, asScheduleId, asScheduleOccurrenceId } from "@bebots/domain";
+import {
+  asBotId,
+  asConversationId,
+  asRunId,
+  asScheduleId,
+  asScheduleOccurrenceId,
+} from "@bebots/domain";
 import type { Schedule } from "@bebots/domain";
 import { openDatabase, migrate, createSqliteScheduleRepository } from "./index";
 import type { SqliteDatabase } from "./database";
@@ -140,5 +146,28 @@ describe("SqliteScheduleRepository", () => {
     const removed = await Effect.runPromise(repo.deleteOccurrences(asScheduleId("sched-1")));
     expect(removed).toBe(2);
     expect(await Effect.runPromise(repo.listOccurrences(asScheduleId("sched-1")))).toEqual([]);
+  });
+
+  it("findAll filters by conversationId", async () => {
+    const repo = createSqliteScheduleRepository(db);
+    await Effect.runPromise(repo.create(makeSchedule("s-free", { conversationId: null })));
+    await Effect.runPromise(
+      repo.create(makeSchedule("s-bound", { conversationId: asConversationId("conv-1") })),
+    );
+    await Effect.runPromise(
+      repo.create(makeSchedule("s-other", { conversationId: asConversationId("conv-2") })),
+    );
+    const bound = await Effect.runPromise(
+      repo.findAll({ conversationId: asConversationId("conv-1") }),
+    );
+    expect(bound.map((s) => String(s.id))).toEqual(["s-bound"]);
+    // Null conversation ids never match a concrete one.
+    expect(
+      (await Effect.runPromise(repo.findAll({ conversationId: asConversationId("missing") }))).map(
+        (s) => String(s.id),
+      ),
+    ).toEqual([]);
+    const free = await Effect.runPromise(repo.findAll());
+    expect(free).toHaveLength(3);
   });
 });

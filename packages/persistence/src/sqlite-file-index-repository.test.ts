@@ -39,6 +39,30 @@ describe("SqliteFileIndexRepository", () => {
     temp.close(db);
   });
 
+  it("removeByBot clears only that bot's entries", async () => {
+    const db = await temp.open();
+    const repo = createSqliteFileIndexRepository(db);
+    const upsert = (botId: string, path: string) =>
+      Effect.runPromise(
+        repo.upsert({
+          botId: asBotId(botId),
+          path,
+          kind: "notes",
+          content: "x",
+          updatedAt: 1,
+        }),
+      );
+    await upsert("bot-1", "bot-1/notes/a.md");
+    await upsert("bot-1", "bot-1/logs/b.md");
+    await upsert("bot-2", "bot-2/notes/c.md");
+    const removed = await Effect.runPromise(repo.removeByBot(asBotId("bot-1")));
+    expect(removed).toBe(2);
+    const hits = await Effect.runPromise(repo.search("x"));
+    expect(hits).toHaveLength(1);
+    expect(String(hits[0]?.botId)).toBe("bot-2");
+    temp.close(db);
+  });
+
   it("removes a path and prunes everything under a deleted directory", async () => {
     const db = await temp.open();
     const repo = createSqliteFileIndexRepository(db);

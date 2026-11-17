@@ -13,6 +13,7 @@ import type { ModelRef } from "@bebots/domain";
 import type { RuntimeModelInfo } from "@bebots/application";
 import {
   BotService,
+  BotDeletionService,
   RunService,
   ConversationService,
   ConversationSessionService,
@@ -27,6 +28,7 @@ import {
 
 export interface ApiDeps {
   readonly botService: BotService;
+  readonly botDeletion: BotDeletionService;
   readonly runService: RunService;
   readonly conversationService: ConversationService;
   readonly conversationSessionService: ConversationSessionService;
@@ -53,6 +55,9 @@ function mapError(
 ): HttpApiError.BadRequest | HttpApiError.NotFound | HttpApiError.InternalServerError {
   if (e instanceof NotFoundError) return new HttpApiError.NotFound();
   if (e instanceof ValidationError) return new HttpApiError.BadRequest();
+  // InternalServerError hides the cause from the client; it must not hide it
+  // from the operator either, so unexpected service errors land in the log.
+  console.error("API handler unexpected error:", e);
   return new HttpApiError.InternalServerError();
 }
 
@@ -193,6 +198,10 @@ export const makeRoutes = (deps: ApiDeps) => {
             }).pipe(Effect.mapError(mapError));
             return bot;
           }),
+        deleteBot: ({ params }) =>
+          deps.botDeletion
+            .deleteBot(asBotId(params.id))
+            .pipe(Effect.mapError(mapError), Effect.asVoid),
         listBotRuns: ({ params }) =>
           deps.runService.listRuns({ botId: asBotId(params.id) }).pipe(Effect.mapError(mapError)),
         createBotRun: ({ params, payload }) =>
@@ -286,7 +295,7 @@ export const makeRoutes = (deps: ApiDeps) => {
             return conv;
           }),
         deleteConversation: ({ params }) =>
-          deps.conversationService
+          deps.conversationCoordinator
             .deleteConversation(params.id)
             .pipe(Effect.mapError(mapError), Effect.asVoid),
         listMessages: ({ params }) =>
@@ -319,6 +328,10 @@ export const makeRoutes = (deps: ApiDeps) => {
               .pipe(Effect.mapError(mapError));
             return sess;
           }),
+        deleteSession: ({ params }) =>
+          deps.conversationSessionService
+            .deleteSession(params.id)
+            .pipe(Effect.mapError(mapError), Effect.asVoid),
       });
     }),
   );

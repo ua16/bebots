@@ -47,6 +47,8 @@ describe("RunService", () => {
       },
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const bots = new Map([
       [
@@ -100,6 +102,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp/bots/x"),
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
+      removeHome: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -184,6 +187,8 @@ describe("RunService", () => {
             createdAt: Date.now(),
           })),
         ),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -206,6 +211,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp/bots/x"),
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
+      removeHome: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -244,6 +250,8 @@ describe("RunService", () => {
       update: (r) => Effect.succeed(r),
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -266,6 +274,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -296,6 +305,8 @@ describe("RunService", () => {
       update: (r) => Effect.succeed(r),
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -309,6 +320,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -346,6 +358,8 @@ describe("RunService", () => {
       },
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -368,6 +382,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     };
     let cancelled = false;
     const runtime: AgentRuntime = {
@@ -434,6 +449,8 @@ describe("RunService", () => {
         Effect.succeed(
           (events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 })),
         ),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -456,6 +473,7 @@ describe("RunService", () => {
       ensureHome: () => Effect.succeed("/tmp"),
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
+      removeHome: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -511,6 +529,8 @@ function makeRunRepo() {
       Effect.succeed(
         (events.get(runId) ?? []).map((e) => ({ tag: e._tag, payload: e, createdAt: 1 })),
       ),
+    deleteByBot: () => Effect.succeed(0),
+    deleteByConversation: () => Effect.succeed(0),
   };
   return { repo, store };
 }
@@ -544,6 +564,7 @@ function makeWorkspace(): BotWorkspace {
     ensureHome: () => Effect.succeed("/tmp/bots/x"),
     writePersona: () => Effect.void,
     homePath: (id) => `/tmp/bots/${id}`,
+    removeHome: () => Effect.void,
   };
 }
 
@@ -811,6 +832,26 @@ describe("RunService session scoping", () => {
           rows.set(String(s.id), s);
           return Effect.succeed(s);
         },
+        deleteByConversation: (conversationId) => {
+          let removed = 0;
+          for (const [id, s] of [...rows]) {
+            if (String(s.conversationId) === String(conversationId)) {
+              rows.delete(id);
+              removed++;
+            }
+          }
+          return Effect.succeed(removed);
+        },
+        deleteByBot: (botId) => {
+          let removed = 0;
+          for (const [id, s] of [...rows]) {
+            if (s.botId !== null && String(s.botId) === String(botId)) {
+              rows.delete(id);
+              removed++;
+            }
+          }
+          return Effect.succeed(removed);
+        },
         delete: (id) => {
           rows.delete(String(id));
           return Effect.void;
@@ -842,6 +883,8 @@ describe("RunService session scoping", () => {
       },
       appendEvent: () => Effect.void,
       listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
     };
     const botRepo: BotRepository = {
       create: (b) => Effect.succeed(b),
@@ -864,6 +907,7 @@ describe("RunService session scoping", () => {
       ensureHome: () => Effect.succeed("/tmp/bots/x"),
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
+      removeHome: () => Effect.void,
     };
     const requests: RunRequest[] = [];
     const runtime: AgentRuntime = {

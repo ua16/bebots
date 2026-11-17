@@ -59,6 +59,31 @@ describe("SqliteMessageRepository", () => {
     temp.close(db);
   });
 
+  it("deleteByConversation removes only that conversation's messages", async () => {
+    const db = await temp.open();
+    const repo = createSqliteMessageRepository(db);
+    const make = (id: string, conversationId: string): Message => ({
+      id: asMessageId(id),
+      conversationId: asConversationId(conversationId),
+      senderType: "human",
+      content: id,
+      deliveryState: "delivered",
+      createdAt: 1,
+    });
+    await Effect.runPromise(repo.create(make("m1", "c1")));
+    await Effect.runPromise(repo.create(make("m2", "c1")));
+    await Effect.runPromise(repo.create(make("m3", "c2")));
+    const removed = await Effect.runPromise(repo.deleteByConversation(asConversationId("c1")));
+    expect(removed).toBe(2);
+    expect(await Effect.runPromise(repo.findById(asMessageId("m1")))).toBeNull();
+    expect(await Effect.runPromise(repo.findById(asMessageId("m2")))).toBeNull();
+    expect((await Effect.runPromise(repo.findById(asMessageId("m3"))))?.id).toBe(asMessageId("m3"));
+    // Deleting an empty conversation succeeds with zero rows.
+    const again = await Effect.runPromise(repo.deleteByConversation(asConversationId("c1")));
+    expect(again).toBe(0);
+    temp.close(db);
+  });
+
   it("updates and fails typed NotFoundError", async () => {
     const db = await temp.open();
     const repo = createSqliteMessageRepository(db);

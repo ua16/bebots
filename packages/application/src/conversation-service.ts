@@ -60,6 +60,11 @@ export interface CreateSessionInput {
 export interface ConversationServiceDeps {
   readonly conversationRepo: ConversationRepository;
   readonly messageRepo: MessageRepository;
+  /**
+   * Session records live per conversation; provided so deleting a conversation
+   * can purge them in the same step. Optional only for legacy test wiring.
+   */
+  readonly sessionRepo?: ConversationSessionRepository;
   readonly clock?: Clock;
   readonly ids?: IdGenerator;
 }
@@ -68,12 +73,14 @@ export interface ConversationServiceDeps {
 export class ConversationService {
   private readonly conversationRepo: ConversationRepository;
   private readonly messageRepo: MessageRepository;
+  private readonly sessionRepo: ConversationSessionRepository | undefined;
   private readonly clock: Clock;
   private readonly ids: IdGenerator;
 
   constructor(deps: ConversationServiceDeps) {
     this.conversationRepo = deps.conversationRepo;
     this.messageRepo = deps.messageRepo;
+    this.sessionRepo = deps.sessionRepo;
     this.clock = deps.clock ?? { now: () => Date.now() };
     this.ids = deps.ids ?? { generate: () => crypto.randomUUID() };
   }
@@ -138,8 +145,31 @@ export class ConversationService {
     });
   }
 
+  /**
+   * Purge one conversation and everything scoped to it: messages and session
+   * records first (children), then the row itself. The schema's foreign keys
+   * are not enforced, so nothing would cascade implicitly. When a session
+   * repo is wired, orphaned session records would otherwise linger forever.
+   */
   deleteConversation(id: string): Effect.Effect<void, RepositoryError | NotFoundError> {
-    return this.conversationRepo.delete(asConversationId(id));
+    const messageRepo = this.messageRepo;
+    const sessionRepo = this.sessionRepo;
+    const conversationRepo = this.conversationRepo;
+    const conversationId = asConversationId(id);
+    return Effect.gen(function* () {
+      // Does the conversation exist? Children are purged either way (they may
+      // be leftovers of a previous partial delete), but a missing row still
+      // fails with NotFoundError so DELETE returns 404.
+      const existing = yield* conversationRepo.findById(conversationId);
+      yield* messageRepo.deleteByConversation(conversationId);
+      if (sessionRepo) {
+        yield* sessionRepo.deleteByConversation(conversationId);
+      }
+      if (!existing) {
+        return yield* Effect.fail(new NotFoundError("Conversation", id));
+      }
+      return yield* conversationRepo.delete(conversationId);
+    }) as Effect.Effect<void, RepositoryError | NotFoundError>;
   }
 
   // --- Messages ---
@@ -211,6 +241,7 @@ export interface ConversationSessionOps {
     id: string,
     runtimeSessionId: string,
   ) => Effect.Effect<ConversationSession, RepositoryError | NotFoundError>;
+  readonly deleteSession: (id: string) => Effect.Effect<void, RepositoryError | NotFoundError>;
 }
 
 /** Owns resumable OpenCode session ids and their lifecycle (PLAN §5). */
@@ -325,6 +356,16 @@ export class ConversationSessionService implements ConversationSessionOps {
         status: "active",
         updatedAt: now,
       });
+    });
+  }
+
+  deleteSession(id: string): Effect.Effect<void, RepositoryError | NotFoundError> {
+    const sessionRepo = this.sessionRepo;
+    const sessionId = asConversationSessionId(id);
+    return Effect.gen(function* () {
+      const existing = yield* sessionRepo.findById(sessionId);
+      if (!existing) return yield* Effect.fail(new NotFoundError("ConversationSession", id));
+      yield* sessionRepo.delete(sessionId);
     });
   }
 

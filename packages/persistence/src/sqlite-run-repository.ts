@@ -110,6 +110,7 @@ export class SqliteRunRepository implements RunRepository {
   findAll(options?: {
     readonly botId?: BotId;
     readonly status?: RunStatus;
+    readonly conversationId?: ConversationId;
     readonly limit?: number;
   }): Effect.Effect<readonly Run[], RepositoryError> {
     const db = this.db;
@@ -124,6 +125,10 @@ export class SqliteRunRepository implements RunRepository {
         if (options?.status) {
           clauses.push("status = ?");
           params.push(options.status);
+        }
+        if (options?.conversationId) {
+          clauses.push("conversation_id = ?");
+          params.push(options.conversationId);
         }
         const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
         const limit = options?.limit ? `LIMIT ${Number(options.limit)}` : "";
@@ -212,6 +217,34 @@ export class SqliteRunRepository implements RunRepository {
       },
       catch: (cause: unknown) => new RepositoryError("Failed to list run events", cause),
     });
+  }
+
+  /**
+   * Delete every run matching a column predicate together with its run_events.
+   * Events go first (children before parents); both statements target the same
+   * predicate, so a crash between them can only leave orphan events, never
+   * orphan-free runs or resurrected parents.
+   */
+  private deleteWhere(column: "bot_id" | "conversation_id", value: string) {
+    const db = this.db;
+    return Effect.try({
+      try: () => {
+        db.prepare(
+          `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE ${column} = ?)`,
+        ).run(value);
+        const runs = db.prepare(`DELETE FROM runs WHERE ${column} = ?`).run(value).changes;
+        return runs;
+      },
+      catch: (cause: unknown) => new RepositoryError("Failed to delete runs", cause),
+    });
+  }
+
+  deleteByBot(botId: BotId): Effect.Effect<number, RepositoryError> {
+    return this.deleteWhere("bot_id", String(botId));
+  }
+
+  deleteByConversation(conversationId: ConversationId): Effect.Effect<number, RepositoryError> {
+    return this.deleteWhere("conversation_id", String(conversationId));
   }
 }
 

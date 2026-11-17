@@ -96,6 +96,24 @@ export class SqliteActivityRepository implements ActivityRepository {
       catch: (cause) => new RepositoryError("Failed to list activity events", cause),
     });
   }
+
+  deleteByEntityIds(
+    entityType: string,
+    entityIds: readonly string[],
+  ): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    if (entityIds.length === 0) return Effect.succeed(0);
+    const placeholders = entityIds.map(() => "?").join(", ");
+    return Effect.try({
+      try: () =>
+        db
+          .prepare(
+            `DELETE FROM activity_events WHERE entity_type = ? AND entity_id IN (${placeholders})`,
+          )
+          .run(entityType, ...entityIds).changes,
+      catch: (cause) => new RepositoryError("Failed to delete activity events", cause),
+    });
+  }
 }
 
 export function createSqliteActivityRepository(db: SqliteDatabase): ActivityRepository {

@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   watch,
   writeFileSync,
@@ -73,6 +74,30 @@ export function createNodeBotWorkspace(options: CreateWorkspaceOptions): BotWork
       assertSafeId(botId);
       return join(botsRoot, botId);
     },
+    // Bot deletion: remove the whole home directory (persona, notes, memory,
+    // logs, .opencode). The id guard blocks traversal; the containment check
+    // additionally guarantees the path resolves strictly inside the bots
+    // root, so this can never take out the root itself. Both sides are
+    // realpath'd — the root's own ancestors may contain symlinks (macOS
+    // /var -> /private/var), which a lexical comparison would misread.
+    removeHome: (botId: BotId) =>
+      Effect.try({
+        try: () => {
+          assertSafeId(botId);
+          const home = join(botsRoot, botId);
+          if (!existsSync(home)) return;
+          const realRoot = realpathSync(botsRoot);
+          const realHome = realpathSync(home);
+          if (realHome === realRoot || !(realHome + "/").startsWith(realRoot + "/")) {
+            throw new WorkspaceError("Bot home escapes the workspace root");
+          }
+          rmSync(realHome, { recursive: true, force: true });
+        },
+        catch: (cause) =>
+          cause instanceof WorkspaceError
+            ? cause
+            : new WorkspaceError("Failed to remove bot home directory", cause),
+      }),
   };
 }
 

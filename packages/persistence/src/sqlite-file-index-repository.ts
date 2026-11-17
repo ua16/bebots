@@ -57,6 +57,14 @@ export class SqliteFileIndexRepository implements FileIndexRepository {
     });
   }
 
+  removeByBot(botId: BotId): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    return Effect.try({
+      try: () => db.prepare("DELETE FROM file_index WHERE bot_id = ?").run(String(botId)).changes,
+      catch: (cause) => new RepositoryError("Failed to clear bot file index", cause),
+    });
+  }
+
   search(
     query: string,
     botId?: BotId,

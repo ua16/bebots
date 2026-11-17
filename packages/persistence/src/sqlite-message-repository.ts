@@ -161,6 +161,16 @@ export class SqliteMessageRepository implements MessageRepository {
       if (result === 0) return yield* Effect.fail(new NotFoundError("Message", String(id)));
     });
   }
+
+  deleteByConversation(conversationId: ConversationId): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    return Effect.try({
+      try: () =>
+        db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(String(conversationId))
+          .changes,
+      catch: (cause) => new RepositoryError("Failed to delete conversation messages", cause),
+    });
+  }
 }
 export function createSqliteMessageRepository(db: SqliteDatabase): MessageRepository {
   return new SqliteMessageRepository(db);

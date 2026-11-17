@@ -1,5 +1,10 @@
 import { Effect } from "effect";
-import type { ConversationSession, ConversationSessionId, ConversationId } from "@bebots/domain";
+import type {
+  ConversationSession,
+  ConversationSessionId,
+  ConversationId,
+  BotId,
+} from "@bebots/domain";
 import { asConversationSessionId, asConversationId } from "@bebots/domain";
 import type { ConversationSessionRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
@@ -180,6 +185,26 @@ export class SqliteConversationSessionRepository implements ConversationSessionR
       });
       if (result === 0)
         return yield* Effect.fail(new NotFoundError("ConversationSession", String(id)));
+    });
+  }
+
+  deleteByConversation(conversationId: ConversationId): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    return Effect.try({
+      try: () =>
+        db
+          .prepare("DELETE FROM conversation_sessions WHERE conversation_id = ?")
+          .run(String(conversationId)).changes,
+      catch: (cause) => new RepositoryError("Failed to delete conversation sessions", cause),
+    });
+  }
+
+  deleteByBot(botId: BotId): Effect.Effect<number, RepositoryError> {
+    const db = this.db;
+    return Effect.try({
+      try: () =>
+        db.prepare("DELETE FROM conversation_sessions WHERE bot_id = ?").run(String(botId)).changes,
+      catch: (cause) => new RepositoryError("Failed to delete bot conversation sessions", cause),
     });
   }
 }

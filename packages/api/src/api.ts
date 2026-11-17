@@ -253,6 +253,11 @@ const bots = HttpApiGroup.make("bots").add(
     success: U,
     error: ApiError,
   }),
+  HttpApiEndpoint.delete("deleteBot", "/api/v1/bots/:id", {
+    params: IdParams,
+    success: HttpApiSchema.NoContent,
+    error: ApiError,
+  }),
   HttpApiEndpoint.get("listBotRuns", "/api/v1/bots/:id/runs", {
     params: IdParams,
     success: Schema.Array(RunResponse),
@@ -330,6 +335,10 @@ const conversations = HttpApiGroup.make("conversations").add(
     params: IdParams,
     payload: SessionBody,
     success: HttpApiSchema.status(201)(U),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.delete("deleteSession", "/api/v1/sessions/:id", {
+    params: IdParams,
     error: ApiError,
   }),
 );

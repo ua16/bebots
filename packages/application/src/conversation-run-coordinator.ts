@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 import { Cause, Effect } from "effect";
 import type { Conversation, Message, MessageSenderType, Run } from "@bebots/domain";
-import { asBotId } from "@bebots/domain";
+import { asBotId, asConversationId } from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
 import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
@@ -378,6 +378,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     const self = this;
     return Effect.gen(function* () {
       if (content.trim().length === 0) return;
+      // The conversation may have been deleted while the run was in flight;
+      // posting into it would resurrect orphaned rows for a deleted thread.
+      const conversation = yield* conversationService.getConversation(conversationId);
+      if (!conversation) return;
       const message = yield* conversationService.addMessage({
         conversationId,
         content,
@@ -392,6 +396,54 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       // and delivery must not depend on the relay hop.
       yield* self.triggerForMessage(conversationId, message, "bot", botId).pipe(Effect.ignore);
     });
+  }
+
+  /**
+   * Delete a conversation as a unit: stop any queued/running runs bound to it
+   * (they would otherwise post replies or rotate session rows for a thread
+   * that no longer exists), purge its run rows + events, purge messages and
+   * session records via the conversation service, then clean in-memory state
+   * that references the conversation (hop counters, bot-link pins). The
+   * conversation row itself is deleted last, so a mid-cascade failure leaves
+   * the thread addressable and the DELETE retryable. Fails NotFound when the
+   * conversation does not exist.
+   */
+  deleteConversation(
+    conversationId: string,
+  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError> {
+    const runService = this.runService;
+    const conversationService = this.conversationService;
+    const self = this;
+    return Effect.gen(function* () {
+      const id = asConversationId(conversationId);
+      yield* runService
+        .cancelRunsForConversation(id)
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError(
+              "Cancelling conversation runs before delete failed",
+              conversationId,
+              Cause.squash(cause),
+            ),
+          ),
+        );
+      // Run rows and their events are part of the thread's history; children
+      // of the conversation go before the conversation row itself.
+      yield* runService.deleteRunsForConversation(id);
+      yield* conversationService.deleteConversation(conversationId);
+      // In-memory bookkeeping: hop counts and any bot-link pins targeting
+      // this conversation must not survive it.
+      self.hopCounts.delete(conversationId);
+      for (const [callerId, targets] of self.botLinks) {
+        for (const [targetId, pin] of [...targets]) {
+          if (pin.conversationId === conversationId) {
+            targets.delete(targetId);
+          }
+        }
+        if (targets.size === 0) self.botLinks.delete(callerId);
+      }
+      self.botLinkConversations.delete(conversationId);
+    }) as Effect.Effect<void, NotFoundError | RepositoryError | ServiceError>;
   }
 
   /** Trigger recipients for an already-persisted message (used by bot replies). */
