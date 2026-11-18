@@ -274,4 +274,92 @@ describe("App", () => {
     }
     expect(JSON.parse(bodyText)).toEqual({ content: "why hello" });
   });
+
+  it("deletes a session from the sidebar right-click menu", async () => {
+    installApi({
+      apiEndpoint: vi.fn(async () => ({ url: "http://127.0.0.1:4747", token: "tok" })),
+    });
+    let deleted = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input).replace("http://127.0.0.1:4747", "");
+      const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (path === "/api/v1/conversations") {
+        return ok(
+          deleted
+            ? []
+            : [
+                {
+                  id: "c1",
+                  kind: "direct",
+                  title: "Hello chat",
+                  participants: ["b1"],
+                  createdAt: 1,
+                  updatedAt: 1,
+                },
+              ],
+        );
+      }
+      if (path === "/api/v1/conversations/c1" && init?.method === "DELETE") {
+        deleted = true;
+        return new Response(null, { status: 204 });
+      }
+      return ok([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    fireEvent.contextMenu(await screen.findByText("Hello chat"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+
+    expect(await screen.findByText("No sessions yet")).toBeTruthy();
+    expect(screen.queryByText("Hello chat")).toBeNull();
+    expect(deleted).toBe(true);
+  });
+
+  it("asks for confirmation before deleting a bot from the sidebar menu", async () => {
+    const botList = [bot];
+    installApi({
+      apiEndpoint: vi.fn(async () => ({ url: "http://127.0.0.1:4747", token: "tok" })),
+      bots: {
+        list: vi.fn(async () => [...botList]),
+        get: vi.fn(async () => bot),
+        create: vi.fn(async () => bot),
+        update: vi.fn(async () => bot),
+        archive: vi.fn(async () => bot),
+      },
+    });
+    let deleted = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input).replace("http://127.0.0.1:4747", "");
+      const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (path === "/api/v1/conversations") return ok([]);
+      if (path === "/api/v1/bots/b1" && init?.method === "DELETE") {
+        deleted = true;
+        botList.length = 0;
+        return new Response(null, { status: 204 });
+      }
+      return ok([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    fireEvent.contextMenu(await screen.findByText("Bot One"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete bot" }));
+
+    expect(screen.getByRole("dialog", { name: "Delete bot?" })).toBeTruthy();
+    expect(deleted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Delete bot?" })).toBeNull();
+    expect(deleted).toBe(false);
+    expect(screen.getByText("Bot One")).toBeTruthy();
+
+    fireEvent.contextMenu(await screen.findByText("Bot One"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete bot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByText("No conversations yet")).toBeTruthy();
+    expect(screen.queryByText("Bot One")).toBeNull();
+    expect(deleted).toBe(true);
+  });
 });

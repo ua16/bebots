@@ -1,6 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Plus, Search } from "lucide-react";
-import { filterSessionGroups, type SessionGroup as SessionGroupType } from "../lib/sidebar-groups";
+import {
+  UNASSIGNED_GROUP_ID,
+  filterSessionGroups,
+  type SessionGroup as SessionGroupType,
+} from "../lib/sidebar-groups";
+import { ContextMenu } from "./ContextMenu";
 import { SessionGroup } from "./SessionGroup";
 
 interface SidebarProps {
@@ -16,6 +21,8 @@ interface SidebarProps {
   readonly onSelectConversation: (id: string, contextBotId?: string | null) => void;
   readonly onNewConversation: (withBotId?: string | null) => void;
   readonly onCreateBot: () => void;
+  readonly onDeleteBot: (botId: string) => void;
+  readonly onDeleteSession: (conversationId: string) => void;
 }
 
 /** Sidebar: search + new bot, bot-grouped session list with search filter. */
@@ -32,8 +39,27 @@ export function Sidebar({
   onSelectConversation,
   onNewConversation,
   onCreateBot,
+  onDeleteBot,
+  onDeleteSession,
 }: SidebarProps) {
   const visibleGroups = useMemo(() => filterSessionGroups(groups, search), [groups, search]);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    kind: "bot" | "session";
+    id: string;
+  } | null>(null);
+
+  const openBotMenu = (event: ReactMouseEvent, botId: string) => {
+    // The synthetic "other sessions" group is not a bot record; only its
+    // individual sessions can be deleted.
+    if (botId === UNASSIGNED_GROUP_ID) return;
+    setMenu({ x: event.clientX, y: event.clientY, kind: "bot", id: botId });
+  };
+
+  const openSessionMenu = (event: ReactMouseEvent, conversationId: string) => {
+    setMenu({ x: event.clientX, y: event.clientY, kind: "session", id: conversationId });
+  };
 
   return (
     <aside className="chat-sidebar">
@@ -70,10 +96,31 @@ export function Sidebar({
             onToggleShowAllSessions={() => onToggleShowAllSessions(group.botId)}
             onSelectConversation={onSelectConversation}
             onNewConversation={onNewConversation}
+            onBotContextMenu={openBotMenu}
+            onSessionContextMenu={openSessionMenu}
           />
         ))}
         {visibleGroups.length === 0 && <p className="session-empty">No conversations yet</p>}
       </div>
+
+      {menu !== null && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={
+            menu.kind === "bot"
+              ? [{ label: "Delete bot", danger: true, onSelect: () => onDeleteBot(menu.id) }]
+              : [
+                  {
+                    label: "Delete session",
+                    danger: true,
+                    onSelect: () => onDeleteSession(menu.id),
+                  },
+                ]
+          }
+        />
+      )}
     </aside>
   );
 }

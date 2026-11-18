@@ -22,6 +22,7 @@ import { botName } from "./lib/bot-name";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { GlobalSettingsOverlay } from "./components/GlobalSettingsOverlay";
+import { Dialog } from "./components/Dialog";
 import { BotEditor } from "./components/BotEditor";
 import { MessageThread } from "./components/MessageThread";
 import { Composer } from "./components/Composer";
@@ -60,6 +61,7 @@ export function App() {
   // Main surface: the thread (default) or the bot editor sheet.
   const [view, setView] = useState<"chat" | "bot-settings">("chat");
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
+  const [pendingDeleteBotId, setPendingDeleteBotId] = useState<string | null>(null);
 
   // Conversations
   const [conversations, setConversations] = useState<readonly ApiConversation[]>([]);
@@ -555,6 +557,59 @@ export function App() {
     }
   };
 
+  // Deleting a bot hard-deletes it with all tied data (threads, runs,
+  // schedules); clear whatever UI state pointed at it.
+  const handleDeleteBot = async (botId: string) => {
+    if (!endpoint) return;
+    setError(null);
+    setPendingDeleteBotId(null);
+    try {
+      await apiRequest(endpoint, `/api/v1/bots/${encodeURIComponent(botId)}`, (c) =>
+        c.bots.deleteBot({ params: { id: botId } }),
+      );
+      if (selectedId === botId) {
+        setSelectedId(null);
+        setView("chat");
+      }
+      if (
+        activeConversationId !== null &&
+        conversations.some((c) => c.id === activeConversationId && c.participants.includes(botId))
+      ) {
+        activeIdRef.current = null;
+        setActiveConversationId(null);
+        setMessages([]);
+        setPendingReply(false);
+        setThreadNotice(null);
+      }
+      await refreshBots();
+      await refreshConversations();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    if (!endpoint) return;
+    setError(null);
+    try {
+      await apiRequest(
+        endpoint,
+        `/api/v1/conversations/${encodeURIComponent(conversationId)}`,
+        (c) => c.conversations.deleteConversation({ params: { id: conversationId } }),
+      );
+      if (activeConversationId === conversationId) {
+        activeIdRef.current = null;
+        setActiveConversationId(null);
+        setMessages([]);
+        setPendingReply(false);
+        setThreadNotice(null);
+      }
+      await refreshConversations();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const handleShowScheduleHistory = async (schedule: ApiSchedule) => {
     if (!endpoint) return;
     if (scheduleHistory?.id === schedule.id) {
@@ -690,6 +745,8 @@ export function App() {
           onSelectConversation={selectConversation}
           onNewConversation={handleNewConversation}
           onCreateBot={() => void handleCreateBot()}
+          onDeleteBot={setPendingDeleteBotId}
+          onDeleteSession={(conversationId) => void handleDeleteConversation(conversationId)}
         />
 
         {/* ------------------------------------------------------------- */}
@@ -782,6 +839,31 @@ export function App() {
         onSave={() => void saveAppSettings()}
         onClose={() => setGlobalSettingsOpen(false)}
       />
+
+      <Dialog
+        open={pendingDeleteBotId !== null}
+        title="Delete bot?"
+        onClose={() => setPendingDeleteBotId(null)}
+      >
+        <p className="dialog-body">
+          This permanently deletes {botName(bots, pendingDeleteBotId)} and all of its threads, runs,
+          and schedules. This cannot be undone.
+        </p>
+        <div className="dialog-actions">
+          <button type="button" className="pill-button" onClick={() => setPendingDeleteBotId(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pill-button pill-button-danger"
+            onClick={() => {
+              if (pendingDeleteBotId !== null) void handleDeleteBot(pendingDeleteBotId);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </Dialog>
     </main>
   );
 }

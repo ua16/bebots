@@ -39,6 +39,11 @@ function statusOf(error: unknown): number {
   return 500;
 }
 
+// FetchHttpClient resolves `globalThis.fetch` through a Context default that
+// effect caches on first use; route through the current global at call time so
+// swapping fetch (test stubs, tooling) always takes effect.
+const fetchService: typeof globalThis.fetch = (...args) => globalThis.fetch(...args);
+
 function makeClient(endpoint: ApiEndpoint): Effect.Effect<Client> {
   return HttpApiClient.make(Api, {
     transformClient: (client) =>
@@ -46,7 +51,10 @@ function makeClient(endpoint: ApiEndpoint): Effect.Effect<Client> {
         HttpClient.mapRequest(HttpClientRequest.prependUrl(endpoint.url)),
         HttpClient.mapRequest(HttpClientRequest.bearerToken(endpoint.token)),
       ),
-  }).pipe(Effect.provide(FetchHttpClient.layer));
+  }).pipe(
+    Effect.provide(FetchHttpClient.layer),
+    Effect.provideService(FetchHttpClient.Fetch, fetchService),
+  );
 }
 
 /**

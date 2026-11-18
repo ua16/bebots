@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { UNASSIGNED_GROUP_ID, type SessionGroup } from "../lib/sidebar-groups";
 import { BotAvatar } from "./avatar";
@@ -12,6 +13,8 @@ interface SessionGroupProps {
   readonly onToggleShowAllSessions: () => void;
   readonly onSelectConversation: (id: string, contextBotId?: string | null) => void;
   readonly onNewConversation: (botId: string | null) => void;
+  readonly onBotContextMenu: (event: ReactMouseEvent, botId: string) => void;
+  readonly onSessionContextMenu: (event: ReactMouseEvent, conversationId: string) => void;
 }
 
 export function SessionGroup({
@@ -24,6 +27,8 @@ export function SessionGroup({
   onToggleShowAllSessions,
   onSelectConversation,
   onNewConversation,
+  onBotContextMenu,
+  onSessionContextMenu,
 }: SessionGroupProps) {
   return (
     <div className="session-group">
@@ -33,6 +38,10 @@ export function SessionGroup({
         aria-expanded={expanded}
         aria-controls={`sessions-${group.botId}`}
         onClick={onToggleExpanded}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onBotContextMenu(e, group.botId);
+        }}
       >
         <BotAvatar id={group.botId === UNASSIGNED_GROUP_ID ? null : group.botId} size={39} />
         <span className="bot-row-name">{group.name}</span>
@@ -65,6 +74,10 @@ export function SessionGroup({
                     ? onSelectConversation(c.id)
                     : onSelectConversation(c.id, group.botId)
                 }
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onSessionContextMenu(e, c.id);
+                }}
               >
                 {c.title || c.id}
               </button>
