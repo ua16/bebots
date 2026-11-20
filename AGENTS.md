@@ -22,6 +22,10 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agent
 
 Start the bot server without the Electron window: `bun run dev -- --headless` (or `BEBOTS_HEADLESS=1`). Port is written to `api-port.txt` in user data; token in `api-token.txt`.
 
+### Repo history
+
+Whenever confusion about history comes up: `docs/agents/repo-history.md`.
+
 ## Coding Guidance
 
 In this repo code exists to explain how something happens, do not use comments in code files unless absolutely necessary (i.e. when the code you wrote does not make sense in the context of the rest of the file).
