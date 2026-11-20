@@ -3,12 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import {
-  asBotId,
-  avatarForMigration,
-  avatarFromBotId,
-  serializeBotAvatar,
-} from "@bebots/domain";
+import { asBotId, avatarForMigration, avatarFromBotId, serializeBotAvatar } from "@bebots/domain";
 import { openDatabase, migrate, createSqliteBotRepository } from "./index";
 
 const sampleAvatar = { face: "face-1", color: 4, shape: "squircle" as const };
@@ -148,9 +143,11 @@ describe("SqliteBotRepository", () => {
       );
     `);
     for (let v = 1; v <= 16; v += 1) {
-      db.prepare(
-        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-      ).run(v, `v${v}`, 1);
+      db.prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)").run(
+        v,
+        `v${v}`,
+        1,
+      );
     }
     db.prepare(
       "INSERT INTO bots (id, name, description, persona, status, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

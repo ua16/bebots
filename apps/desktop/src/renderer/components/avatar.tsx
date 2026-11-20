@@ -53,7 +53,9 @@ export function BotAvatar({
     return roughShapePaths(resolved.shape, fill, seed);
   }, [resolved]);
 
-  const facePaths = resolved ? (AVATAR_FACE_PATHS[resolved.face] ?? AVATAR_FACE_PATHS["face-0"]!) : null;
+  const facePaths = resolved
+    ? (AVATAR_FACE_PATHS[resolved.face] ?? AVATAR_FACE_PATHS["face-0"]!)
+    : null;
   const faceScale = faceScaleForSize(size);
 
   return (

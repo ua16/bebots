@@ -77,7 +77,8 @@ export function AvatarEditDialog({ open, value, onChange, onClose }: AvatarEditD
                 key={shape}
                 type="button"
                 className={
-                  "avatar-edit-swatch" + (value.shape === shape ? " avatar-edit-swatch-selected" : "")
+                  "avatar-edit-swatch" +
+                  (value.shape === shape ? " avatar-edit-swatch-selected" : "")
                 }
                 aria-label={SHAPE_LABELS[shape] ?? shape}
                 aria-pressed={value.shape === shape}

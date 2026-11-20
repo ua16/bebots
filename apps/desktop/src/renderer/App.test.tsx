@@ -360,7 +360,7 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(await screen.findByText("Autosaved"));
     fireEvent.click(await screen.findByRole("button", { name: "Bot settings" }));
-    expect((await screen.findByLabelText("Name") as HTMLInputElement).value).toBe("Autosaved");
+    expect(((await screen.findByLabelText("Name")) as HTMLInputElement).value).toBe("Autosaved");
   });
 
   it("persists avatar when the edit dialog closes", async () => {

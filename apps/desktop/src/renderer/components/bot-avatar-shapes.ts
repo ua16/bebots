@@ -42,7 +42,9 @@ export function roundedStarPath(): string {
   for (let i = 0; i < verts.length; i += 1) {
     const tip = verts[i]!;
     const nextMid = mid(tip, verts[(i + 1) % verts.length]!);
-    parts.push(`Q ${tip.x.toFixed(2)} ${tip.y.toFixed(2)} ${nextMid.x.toFixed(2)} ${nextMid.y.toFixed(2)}`);
+    parts.push(
+      `Q ${tip.x.toFixed(2)} ${tip.y.toFixed(2)} ${nextMid.x.toFixed(2)} ${nextMid.y.toFixed(2)}`,
+    );
   }
   parts.push("Z");
   return parts.join(" ");
