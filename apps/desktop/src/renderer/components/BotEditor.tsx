@@ -1,5 +1,5 @@
 import type { BebotsBot } from "../../shared/preload-api";
-import type { ApiModel, ApiRun, ApiSchedule, ApiScheduleOccurrence } from "../lib/api-types";
+import type { ApiModel, ApiSchedule, ApiScheduleOccurrence } from "../lib/api-types";
 import type { ModelSelection } from "../lib/model-selection";
 import { BOT_APP_DEFAULT_OPTION, ModelSelect } from "./ModelSelect";
 import { SchedulePanel } from "./SchedulePanel";
@@ -26,7 +26,6 @@ interface BotEditorProps {
   readonly onRun: () => void;
   readonly runStatus: string | null;
   readonly runResult: string | null;
-  readonly runHistory: readonly ApiRun[];
   // Schedules
   readonly schedules: readonly ApiSchedule[];
   readonly scheduleHistory: {
@@ -67,7 +66,6 @@ export function BotEditor({
   onRun,
   runStatus,
   runResult,
-  runHistory,
   schedules,
   scheduleHistory,
   hasConversation,
@@ -145,24 +143,6 @@ export function BotEditor({
           </label>
           {runStatus && <p className="run-status">Run: {runStatus}</p>}
           {runResult !== null && <pre className="log">{runResult}</pre>}
-          {runHistory.length > 0 && (
-            <div className="run-history">
-              <h3>Run history</h3>
-              <ul>
-                {runHistory.map((run) => (
-                  <li key={run.id} className="card-row">
-                    <code>{run.status}</code> {run.prompt.slice(0, 60)}
-                    {typeof run.summary === "string" && run.summary.length > 0 && (
-                      <pre className="log">{run.summary.slice(0, 200)}</pre>
-                    )}
-                    {typeof run.error === "string" && run.error.length > 0 && (
-                      <pre className="log error">{run.error.slice(0, 200)}</pre>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
           <SchedulePanel
             schedules={schedules}
             hasConversation={hasConversation}

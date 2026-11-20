@@ -6,7 +6,6 @@ import type {
   ApiConversation,
   ApiMessage,
   ApiModel,
-  ApiRun,
   ApiSchedule,
   ApiScheduleOccurrence,
 } from "./lib/api-types";
@@ -23,6 +22,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { GlobalSettingsOverlay } from "./components/GlobalSettingsOverlay";
 import { Dialog } from "./components/Dialog";
+import { ToastStack, type ToastItem } from "./components/Toast";
 import { BotEditor } from "./components/BotEditor";
 import { MessageThread } from "./components/MessageThread";
 import { Composer } from "./components/Composer";
@@ -43,7 +43,13 @@ export function App() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [persona, setPersona] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
+  const pushError = useCallback((message: string) => {
+    setToasts((prev) => [...prev, { id: crypto.randomUUID(), message, tone: "error" }]);
+  }, []);
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
   const [prompt, setPrompt] = useState("");
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<string | null>(null);
@@ -74,8 +80,6 @@ export function App() {
   // Bot groups whose session list is fully expanded (beyond the 5 most recent).
   const [expandedSessions, setExpandedSessions] = useState<ReadonlySet<string>>(new Set());
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // Run history for the selected bot
-  const [runHistory, setRunHistory] = useState<readonly ApiRun[]>([]);
   // Schedules for the selected bot (durable scheduled runs)
   const [schedules, setSchedules] = useState<readonly ApiSchedule[]>([]);
   // Expanded schedule: its recent occurrence history
@@ -113,7 +117,7 @@ export function App() {
       const list = await api.list(false);
       setBots(list);
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -126,9 +130,9 @@ export function App() {
         ),
       );
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
-  }, [endpoint]);
+  }, [endpoint, pushError]);
 
   useEffect(() => {
     void refreshBots();
@@ -168,7 +172,7 @@ export function App() {
       );
       setMessages(list);
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -246,7 +250,7 @@ export function App() {
       await refreshConversations();
       return conv.id;
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
       return null;
     }
   };
@@ -284,7 +288,7 @@ export function App() {
         setPendingReply(false);
       }
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -294,22 +298,6 @@ export function App() {
     if (created === null) return;
     selectConversation(created, botId);
   };
-
-  const refreshRunHistory = useCallback(async () => {
-    if (!endpoint || !selectedId) {
-      setRunHistory([]);
-      return;
-    }
-    try {
-      setRunHistory(
-        await apiRequest(endpoint, `/api/v1/bots/${encodeURIComponent(selectedId)}/runs`, (c) =>
-          c.bots.listBotRuns({ params: { id: selectedId } }),
-        ),
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [endpoint, selectedId]);
 
   const selected = bots.find((b) => b.id === selectedId) ?? null;
 
@@ -326,9 +314,9 @@ export function App() {
       );
       setSchedules([...all].sort((a, b) => b.createdAt - a.createdAt));
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
-  }, [endpoint, selectedId]);
+  }, [endpoint, selectedId, pushError]);
 
   // Re-fetch the expanded schedule's occurrence history so statuses
   // (pending → enqueued → succeeded/failed) update after a trigger fires
@@ -344,33 +332,30 @@ export function App() {
       );
       setScheduleHistory({ id, occurrences });
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
-  }, [endpoint, scheduleHistory?.id]);
+  }, [endpoint, scheduleHistory?.id, pushError]);
 
   useEffect(() => {
     if (selected) {
-      void refreshRunHistory();
       void refreshSchedules();
     } else {
-      setRunHistory([]);
       setSchedules([]);
       setScheduleHistory(null);
     }
-  }, [selected, refreshRunHistory, refreshSchedules]);
+  }, [selected, refreshSchedules]);
 
-  // Schedules and runs can also be created/advanced by bots via MCP, which
-  // the renderer can't see; poll the schedule list, run history, and any
-  // expanded occurrence history while a bot is selected.
+  // Schedules can also be created/advanced by bots via MCP, which the
+  // renderer can't see; poll the schedule list and any expanded occurrence
+  // history while a bot is selected.
   useEffect(() => {
     if (!selected) return;
     const interval = setInterval(() => {
       void refreshSchedules();
-      void refreshRunHistory();
       void refreshScheduleHistory();
     }, 15_000);
     return () => clearInterval(interval);
-  }, [selected, refreshSchedules, refreshRunHistory, refreshScheduleHistory]);
+  }, [selected, refreshSchedules, refreshScheduleHistory]);
 
   // The open thread can receive messages from outside the composer — a
   // scheduled-run reply lands in its own thread whenever the scheduler fires.
@@ -408,7 +393,6 @@ export function App() {
 
   const saveAppSettings = async () => {
     if (!endpoint) return;
-    setError(null);
     try {
       const s = await apiRequest(endpoint, "/api/v1/settings", (c) =>
         c.settings.putSettings({
@@ -417,13 +401,12 @@ export function App() {
       );
       setDefaultModelSelection(appDefaultToSelection(s.defaultModel));
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleCreate = async () => {
     if (!api) return;
-    setError(null);
     try {
       const bot = await api.create({
         name: name || "New bot",
@@ -435,13 +418,12 @@ export function App() {
       setView("bot-settings");
       await refreshBots();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleCreateBot = async () => {
     if (!api) return;
-    setError(null);
     try {
       const bot = await api.create({
         name: "New bot",
@@ -453,13 +435,12 @@ export function App() {
       setView("bot-settings");
       await refreshBots();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleSave = async () => {
     if (!api || !selectedId) return;
-    setError(null);
     try {
       await api.update(selectedId, {
         name,
@@ -469,44 +450,40 @@ export function App() {
       });
       await refreshBots();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleArchive = async () => {
     if (!api || !selectedId) return;
-    setError(null);
     try {
       await api.archive(selectedId);
       setSelectedId(null);
       await refreshBots();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleRun = async () => {
     if (!api || !selectedId) return;
-    setError(null);
     setRunStatus("running");
     try {
       const run = await bebots!.runs.start({ botId: selectedId, prompt: prompt || "Hello" });
       const final = await bebots!.runs.await(run.id, 120000);
       setRunStatus(final?.status ?? run.status);
       setRunResult(final?.summary ?? null);
-      void refreshRunHistory();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
       setRunStatus("failed");
     }
   };
 
   const handleCreateSchedule = async () => {
     if (!endpoint || !selectedId) return;
-    setError(null);
     const minutes = Number(scheduleMinutes);
     if (!Number.isFinite(minutes) || minutes < 1) {
-      setError("Interval must be at least 1 minute");
+      pushError("Interval must be at least 1 minute");
       return;
     }
     try {
@@ -522,13 +499,12 @@ export function App() {
       setSchedulePrompt("");
       await refreshSchedules();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleToggleSchedule = async (schedule: ApiSchedule) => {
     if (!endpoint) return;
-    setError(null);
     try {
       await apiRequest(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, (c) =>
         c.schedules.updateSchedule({
@@ -539,13 +515,12 @@ export function App() {
       setScheduleHistory(null);
       await refreshSchedules();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleDeleteSchedule = async (schedule: ApiSchedule) => {
     if (!endpoint) return;
-    setError(null);
     try {
       await apiRequest(endpoint, `/api/v1/schedules/${encodeURIComponent(schedule.id)}`, (c) =>
         c.schedules.deleteSchedule({ params: { id: schedule.id } }),
@@ -553,7 +528,7 @@ export function App() {
       setScheduleHistory(null);
       await refreshSchedules();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -561,7 +536,6 @@ export function App() {
   // schedules); clear whatever UI state pointed at it.
   const handleDeleteBot = async (botId: string) => {
     if (!endpoint) return;
-    setError(null);
     setPendingDeleteBotId(null);
     try {
       await apiRequest(endpoint, `/api/v1/bots/${encodeURIComponent(botId)}`, (c) =>
@@ -584,13 +558,12 @@ export function App() {
       await refreshBots();
       await refreshConversations();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
   const handleDeleteConversation = async (conversationId: string) => {
     if (!endpoint) return;
-    setError(null);
     try {
       await apiRequest(
         endpoint,
@@ -606,7 +579,7 @@ export function App() {
       }
       await refreshConversations();
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -624,7 +597,7 @@ export function App() {
       );
       setScheduleHistory({ id: schedule.id, occurrences });
     } catch (e) {
-      setError(String(e));
+      pushError(String(e));
     }
   };
 
@@ -726,7 +699,7 @@ export function App() {
         <p>Platform: {platform}</p>
         {workspaceRoot && <p>Bots home: {workspaceRoot}</p>}
       </header>
-      {error && <p className="error app-error">{error}</p>}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       <div className="app-shell">
         {/* ------------------------------------------------------------ */}
@@ -787,7 +760,6 @@ export function App() {
               onRun={handleRun}
               runStatus={runStatus}
               runResult={runResult}
-              runHistory={runHistory}
               schedules={schedules}
               scheduleHistory={scheduleHistory}
               hasConversation={(id) => conversations.some((c) => c.id === id)}

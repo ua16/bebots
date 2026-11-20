@@ -24,6 +24,8 @@ html,
 body,
 #root {
   height: 100%;
+  margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family:
@@ -54,11 +56,12 @@ body,
 }
 
 .app-main {
-  height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-size: 20px;
@@ -87,12 +90,6 @@ body,
   color: var(--error);
 }
 
-.app-error {
-  margin: 0;
-  padding: 0.3rem 1.25rem;
-  font-size: 0.85rem;
-}
-
 .app-shell {
   flex: 1;
   min-height: 0;
@@ -104,9 +101,11 @@ body,
 .chat-sidebar {
   flex: none;
   width: 347px;
+  min-height: 0;
   box-sizing: border-box;
   background: var(--sidebar-bg);
   border-right: 1px solid #0c0c0c;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 26px 22px 40px;
   display: flex;
@@ -276,8 +275,10 @@ body,
 .chat-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -291,19 +292,36 @@ body,
   padding: 12px 34px;
 }
 
-.thread-head-titles {
+.thread-head-identity {
   min-width: 0;
   margin-right: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.thread-head-titles h2 {
+.thread-head-name-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.thread-head-name-row h2 {
   margin: 0;
+  padding: 0;
   font-size: 40px;
   font-weight: 700;
   line-height: 1.1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thread-head-participants {
+  margin: 0;
+  padding-left: calc(47px + 14px);
+  line-height: 1.2;
 }
 
 .thread-extra-avatars {
@@ -722,23 +740,9 @@ body,
   align-items: center;
 }
 
-.schedule-panel h3,
-.run-history h3 {
+.schedule-panel h3 {
   margin: 0 0 0.5rem;
   font-size: 24px;
-}
-
-.run-history {
-  margin-top: 0.5rem;
-}
-
-.run-history ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
 }
 
 .schedule-list {
@@ -817,6 +821,85 @@ body,
   gap: 0.25rem;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- toast */
+
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 60;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 48px);
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  max-width: 480px;
+  padding: 12px 10px 12px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast-error {
+  border: 1px solid #5a2a2a;
+  color: var(--error);
+}
+
+.toast-info {
+  border: 1px solid #3a3a3a;
+  color: var(--text);
+}
+
+.toast-message {
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.toast-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-dot);
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
+  background: #313131;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* -------------------------------------------------------------- dialog */

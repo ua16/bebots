@@ -24,10 +24,14 @@ export function ThreadHeader({
 }: ThreadHeaderProps) {
   return (
     <header className="chat-thread-head">
-      {headerBot !== null ? <BotAvatar id={headerBot.id} size={47} /> : null}
-      <div className="thread-head-titles">
-        <h2>{headerTitle}</h2>
-        {threadBotIds.length > 1 && <p className="muted">{participantsLabel}</p>}
+      <div className="thread-head-identity">
+        <div className="thread-head-name-row">
+          {headerBot !== null ? <BotAvatar id={headerBot.id} size={47} /> : null}
+          <h2>{headerTitle}</h2>
+        </div>
+        <p className="muted thread-head-participants">
+          {threadBotIds.length > 1 ? participantsLabel : "\u00a0"}
+        </p>
       </div>
       {extraBotIds.length > 0 && (
         <div className="thread-extra-avatars" aria-hidden>
