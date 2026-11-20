@@ -7,7 +7,12 @@ import {
   OpenApi,
 } from "effect/http-api";
 import { Schema, SchemaGetter } from "effect";
-import { ModelRefPatchSchema, ModelRefSchema, ScheduleTriggerSchema } from "@bebots/domain";
+import {
+  BotAvatarSchema,
+  ModelRefPatchSchema,
+  ModelRefSchema,
+  ScheduleTriggerSchema,
+} from "@bebots/domain";
 
 const IdParams = Schema.Struct({ id: Schema.String });
 const LimitQuery = Schema.Struct({ limit: Schema.optional(Schema.Number) });
@@ -107,6 +112,7 @@ const BotBody = Schema.Struct({
   persona: Schema.optional(Schema.String),
   status: Schema.optional(Schema.Literals(["active", "archived"])),
   model: Schema.optional(ModelRefPatchSchema),
+  avatar: Schema.optional(BotAvatarSchema),
 });
 
 const SettingsBody = Schema.Struct({

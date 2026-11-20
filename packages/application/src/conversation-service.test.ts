@@ -7,7 +7,13 @@ import type {
   Message,
   Run,
 } from "@bebots/domain";
-import { asBotId, asConversationId, asConversationSessionId, asMessageId } from "@bebots/domain";
+import {
+  asBotId,
+  asConversationId,
+  asConversationSessionId,
+  asMessageId,
+  avatarFromBotId,
+} from "@bebots/domain";
 import { ConversationService, ConversationSessionService } from "./conversation-service.js";
 import { RunService } from "./run-service.js";
 import { NotFoundError, ValidationError } from "./errors.js";
@@ -398,6 +404,7 @@ describe("RunService conversation resume contract", () => {
         description: "",
         persona: "",
         status: "active",
+        avatar: avatarFromBotId("bot-1"),
         createdAt: 1,
         updatedAt: 1,
       }),

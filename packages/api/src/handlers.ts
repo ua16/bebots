@@ -6,10 +6,11 @@ import {
   asBotId,
   asRunId,
   asConversationId,
+  validateBotAvatar,
   validateModelRef,
   validateScheduleTrigger,
 } from "@bebots/domain";
-import type { ModelRef } from "@bebots/domain";
+import type { BotAvatar, ModelRef } from "@bebots/domain";
 import type { RuntimeModelInfo } from "@bebots/application";
 import {
   BotService,
@@ -69,6 +70,17 @@ function normalizeModelInput(
     return { model: validated.value ?? null };
   }
   return { error: `${validated.field}: ${validated.message}` };
+}
+
+function normalizeAvatarInput(
+  value: unknown,
+): { readonly avatar?: BotAvatar } | { readonly error: string } {
+  if (value === undefined) return {};
+  const validated = validateBotAvatar(value);
+  if (validated.valid === false) {
+    return { error: `${validated.field}: ${validated.message}` };
+  }
+  return { avatar: validated.value };
 }
 
 export const makeRoutes = (deps: ApiDeps) => {
@@ -155,12 +167,15 @@ export const makeRoutes = (deps: ApiDeps) => {
             const body = payload ?? {};
             const model = normalizeModelInput(body.model);
             if ("error" in model) return yield* new HttpApiError.BadRequest();
+            const avatar = normalizeAvatarInput(body.avatar);
+            if ("error" in avatar) return yield* new HttpApiError.BadRequest();
             const bot = yield* deps.botService
               .createBot({
                 name: body.name ?? "New bot",
                 ...(body.description !== undefined && { description: body.description }),
                 ...(body.persona !== undefined && { persona: body.persona }),
                 ...("model" in model && { model: model.model }),
+                ...("avatar" in avatar && avatar.avatar !== undefined && { avatar: avatar.avatar }),
               })
               .pipe(Effect.mapError(mapError));
             yield* Effect.tryPromise({
@@ -183,6 +198,8 @@ export const makeRoutes = (deps: ApiDeps) => {
             const id = asBotId(params.id);
             const model = normalizeModelInput(body.model);
             if ("error" in model) return yield* new HttpApiError.BadRequest();
+            const avatar = normalizeAvatarInput(body.avatar);
+            if ("error" in avatar) return yield* new HttpApiError.BadRequest();
             const bot = yield* deps.botService
               .updateBot(id, {
                 ...(body.name !== undefined && { name: body.name }),
@@ -190,6 +207,7 @@ export const makeRoutes = (deps: ApiDeps) => {
                 ...(body.persona !== undefined && { persona: body.persona }),
                 ...(body.status !== undefined && { status: body.status }),
                 ...("model" in model && { model: model.model }),
+                ...("avatar" in avatar && avatar.avatar !== undefined && { avatar: avatar.avatar }),
               })
               .pipe(Effect.mapError(mapError));
             yield* Effect.tryPromise({

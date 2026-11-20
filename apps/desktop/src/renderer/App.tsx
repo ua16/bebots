@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { avatarFromBotId, type BotAvatar } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
@@ -43,6 +44,16 @@ export function App() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [persona, setPersona] = useState("");
+  const [avatar, setAvatar] = useState<BotAvatar>(() => avatarFromBotId("new-bot"));
+  const draftRef = useRef({
+    name: "",
+    description: "",
+    persona: "",
+    avatar: avatarFromBotId("new-bot") as BotAvatar,
+    botModelSelection: { kind: "app-default" } as ModelSelection,
+  });
+  const botPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncedBotIdRef = useRef<string | null>(null);
   const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
   const pushError = useCallback((message: string) => {
     setToasts((prev) => [...prev, { id: crypto.randomUUID(), message, tone: "error" }]);
@@ -371,24 +382,139 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConversationId]);
 
+  // Load draft when the selected bot changes — not on every bots[] refresh, so
+  // autosave updates do not clobber in-progress edits.
   useEffect(() => {
-    if (selected) {
-      setName(selected.name);
-      setDescription(selected.description);
-      setPersona(selected.persona);
-      setBotModelSelection(botModelToSelection(selected.model));
-    } else {
+    if (!selectedId) {
+      syncedBotIdRef.current = null;
+      const emptyModel = { kind: "app-default" } as ModelSelection;
+      const emptyAvatar = avatarFromBotId("new-bot");
       setName("");
       setDescription("");
       setPersona("");
-      setBotModelSelection({ kind: "app-default" });
+      setAvatar(emptyAvatar);
+      setBotModelSelection(emptyModel);
+      draftRef.current = {
+        name: "",
+        description: "",
+        persona: "",
+        avatar: emptyAvatar,
+        botModelSelection: emptyModel,
+      };
+      return;
     }
-  }, [selected]);
+    if (syncedBotIdRef.current === selectedId) return;
+    const bot = bots.find((b) => b.id === selectedId);
+    if (!bot) return;
+    syncedBotIdRef.current = selectedId;
+    const modelSelection = botModelToSelection(bot.model);
+    setName(bot.name);
+    setDescription(bot.description);
+    setPersona(bot.persona);
+    setAvatar(bot.avatar);
+    setBotModelSelection(modelSelection);
+    draftRef.current = {
+      name: bot.name,
+      description: bot.description,
+      persona: bot.persona,
+      avatar: bot.avatar,
+      botModelSelection: modelSelection,
+    };
+  }, [selectedId, bots]);
 
   // Group the model catalog by provider (stable, response order) for optgroups.
   const modelGroups: ReadonlyArray<[string, readonly ApiModel[]]> = useMemo(
     () => groupModelsByProvider(models),
     [models],
+  );
+
+  const persistBot = useCallback(async () => {
+    if (!api || !selectedId) return;
+    const draft = draftRef.current;
+    try {
+      const updated = await api.update(selectedId, {
+        name: draft.name,
+        description: draft.description,
+        persona: draft.persona,
+        model: selectionToApiModel(draft.botModelSelection),
+        avatar: draft.avatar,
+      });
+      setBots((prev) =>
+        prev.map((b) => (b.id === updated.id ? { ...updated, homePath: b.homePath } : b)),
+      );
+    } catch (e) {
+      pushError(String(e));
+    }
+  }, [api, selectedId, pushError]);
+
+  const schedulePersistBot = useCallback(() => {
+    if (!selectedId) return;
+    if (botPersistTimerRef.current) clearTimeout(botPersistTimerRef.current);
+    botPersistTimerRef.current = setTimeout(() => {
+      botPersistTimerRef.current = null;
+      void persistBot();
+    }, 400);
+  }, [selectedId, persistBot]);
+
+  useEffect(() => {
+    return () => {
+      if (botPersistTimerRef.current) clearTimeout(botPersistTimerRef.current);
+    };
+  }, []);
+
+  const handleNameChange = useCallback(
+    (value: string) => {
+      setName(value);
+      draftRef.current = { ...draftRef.current, name: value };
+      schedulePersistBot();
+    },
+    [schedulePersistBot],
+  );
+
+  const handleDescriptionChange = useCallback(
+    (value: string) => {
+      setDescription(value);
+      draftRef.current = { ...draftRef.current, description: value };
+      schedulePersistBot();
+    },
+    [schedulePersistBot],
+  );
+
+  const handlePersonaChange = useCallback(
+    (value: string) => {
+      setPersona(value);
+      draftRef.current = { ...draftRef.current, persona: value };
+      schedulePersistBot();
+    },
+    [schedulePersistBot],
+  );
+
+  const handleAvatarChange = useCallback((value: BotAvatar) => {
+    setAvatar(value);
+    draftRef.current = { ...draftRef.current, avatar: value };
+  }, []);
+
+  const handleAvatarDialogClose = useCallback(() => {
+    if (!selectedId) return;
+    if (botPersistTimerRef.current) {
+      clearTimeout(botPersistTimerRef.current);
+      botPersistTimerRef.current = null;
+    }
+    void persistBot();
+  }, [selectedId, persistBot]);
+
+  const handleBotModelSelect = useCallback(
+    (selection: ModelSelection) => {
+      setBotModelSelection(selection);
+      draftRef.current = { ...draftRef.current, botModelSelection: selection };
+      if (!selectedId) return;
+      if (botPersistTimerRef.current) {
+        clearTimeout(botPersistTimerRef.current);
+        botPersistTimerRef.current = null;
+      }
+      void persistBot();
+    },
+    [selectedId, persistBot],
   );
 
   const saveAppSettings = async () => {
@@ -413,6 +539,7 @@ export function App() {
         description,
         persona,
         model: selectionToApiModel(botModelSelection),
+        avatar,
       });
       setSelectedId(bot.id);
       setView("bot-settings");
@@ -433,21 +560,6 @@ export function App() {
       });
       setSelectedId(bot.id);
       setView("bot-settings");
-      await refreshBots();
-    } catch (e) {
-      pushError(String(e));
-    }
-  };
-
-  const handleSave = async () => {
-    if (!api || !selectedId) return;
-    try {
-      await api.update(selectedId, {
-        name,
-        description,
-        persona,
-        model: selectionToApiModel(botModelSelection),
-      });
       await refreshBots();
     } catch (e) {
       pushError(String(e));
@@ -659,7 +771,10 @@ export function App() {
       ? selectedId
       : (threadBotIds[0] ?? null);
   const headerBot = bots.find((b) => b.id === headerBotId) ?? null;
-  const extraBotIds = threadBotIds.filter((id) => id !== headerBotId);
+  const extraBots = threadBotIds
+    .filter((id) => id !== headerBotId)
+    .map((id) => bots.find((b) => b.id === id))
+    .filter((b): b is BebotsBot => b !== undefined);
   const headerTitle = headerBot
     ? headerBot.name
     : (activeConversation?.title ?? selected?.name ?? "bebots hub");
@@ -730,7 +845,7 @@ export function App() {
             headerBot={headerBot}
             headerTitle={headerTitle}
             threadBotIds={threadBotIds}
-            extraBotIds={extraBotIds}
+            extraBots={extraBots}
             participantsLabel={participantsLabel}
             settingsOpen={view === "bot-settings"}
             onToggleSettings={() =>
@@ -742,17 +857,19 @@ export function App() {
             <BotEditor
               selected={selected}
               name={name}
-              onNameChange={setName}
+              onNameChange={handleNameChange}
               description={description}
-              onDescriptionChange={setDescription}
+              onDescriptionChange={handleDescriptionChange}
               persona={persona}
-              onPersonaChange={setPersona}
+              onPersonaChange={handlePersonaChange}
+              avatar={avatar}
+              onAvatarChange={handleAvatarChange}
+              onAvatarDialogClose={handleAvatarDialogClose}
               modelSelection={botModelSelection}
-              onModelSelect={setBotModelSelection}
+              onModelSelect={handleBotModelSelect}
               defaultModelSelection={defaultModelSelection}
               modelGroups={modelGroups}
               onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
-              onSave={handleSave}
               onArchive={handleArchive}
               onCreate={handleCreate}
               prompt={prompt}

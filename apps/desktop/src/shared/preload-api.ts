@@ -3,6 +3,12 @@ export interface BebotsModelRef {
   readonly id: string;
 }
 
+export interface BebotsBotAvatar {
+  readonly face: string;
+  readonly color: number;
+  readonly shape: string;
+}
+
 export interface BebotsBot {
   readonly id: string;
   readonly homePath: string;
@@ -12,6 +18,7 @@ export interface BebotsBot {
   readonly status: "active" | "archived";
   /** Per-bot model override; null/absent = app default (if set) → opencode default. */
   readonly model?: BebotsModelRef | null;
+  readonly avatar: BebotsBotAvatar;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -41,6 +48,7 @@ export interface BebotsPreloadApi {
       readonly description?: string;
       readonly persona?: string;
       readonly model?: BebotsModelRef | null;
+      readonly avatar?: BebotsBotAvatar;
     }) => Promise<BebotsBot>;
     readonly update: (
       id: string,
@@ -49,6 +57,7 @@ export interface BebotsPreloadApi {
         readonly description?: string;
         readonly persona?: string;
         readonly model?: BebotsModelRef | null;
+        readonly avatar?: BebotsBotAvatar;
       },
     ) => Promise<BebotsBot>;
     readonly archive: (id: string) => Promise<BebotsBot>;

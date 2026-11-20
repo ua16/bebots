@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
-import { asBotId, asConversationId, asRunId } from "@bebots/domain";
+import { asBotId, asConversationId, asRunId, avatarFromBotId } from "@bebots/domain";
 import type { ConversationSession } from "@bebots/domain";
 import { RunService } from "./run-service.js";
 import { ConversationSessionService } from "./conversation-service.js";
@@ -72,6 +72,7 @@ describe("RunService", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any,
@@ -199,6 +200,7 @@ describe("RunService", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any),
@@ -262,6 +264,7 @@ describe("RunService", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any),
@@ -370,6 +373,7 @@ describe("RunService", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any),
@@ -461,6 +465,7 @@ describe("RunService", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any),
@@ -547,6 +552,7 @@ function makeBotRepo(found = true): BotRepository {
               description: "",
               persona: "",
               status: "active",
+              avatar: avatarFromBotId("bot-1"),
               createdAt: 1,
               updatedAt: 1,
             } as any)
@@ -895,6 +901,7 @@ describe("RunService session scoping", () => {
           description: "",
           persona: "",
           status: "active",
+          avatar: avatarFromBotId("bot-1"),
           createdAt: 1,
           updatedAt: 1,
         } as any),

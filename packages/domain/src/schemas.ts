@@ -8,6 +8,12 @@ export const ModelRefSchema = Schema.Struct({
 
 export const ModelRefPatchSchema = Schema.Union([Schema.Undefined, Schema.Null, ModelRefSchema]);
 
+export const BotAvatarSchema = Schema.Struct({
+  face: Schema.String,
+  color: Schema.Number,
+  shape: Schema.String,
+});
+
 export const BotIdSchema = Schema.String.pipe(Schema.brand("BotId"));
 export const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
 export const TaskIdSchema = Schema.String.pipe(Schema.brand("TaskId"));

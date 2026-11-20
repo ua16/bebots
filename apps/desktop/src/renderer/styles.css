@@ -222,8 +222,15 @@ body,
 
 .bot-avatar {
   flex: none;
-  border-radius: var(--radius-dot);
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.bot-avatar svg {
+  display: block;
+  overflow: visible;
 }
 
 .session-pills {
@@ -951,6 +958,85 @@ body,
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 0.35rem;
+}
+
+.avatar-field-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.avatar-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.avatar-edit-preview {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.avatar-edit-fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.avatar-edit-fieldset legend {
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.avatar-edit-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.avatar-edit-swatch {
+  appearance: none;
+  border: 2px solid transparent;
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 6px;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.avatar-edit-swatch:hover {
+  background: var(--surface-hover);
+}
+
+.avatar-edit-swatch-selected {
+  border-color: var(--text);
+}
+
+.avatar-edit-color {
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.avatar-edit-color-selected {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--sidebar-bg);
+}
+
+.dialog-panel:has(.avatar-edit) {
+  width: min(480px, 100%);
 }
 
 .pill-button-danger {
