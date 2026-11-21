@@ -463,14 +463,16 @@ body,
 /* -------------------------------------------------------------- user input */
 
 .user-input-card {
+  position: relative;
+  z-index: 2;
   flex: none;
   margin: 0 44px 0.75rem;
   padding: 0.35rem 0.25rem 0.75rem;
-  background: transparent;
+  background: var(--bg);
 }
 
 .user-input-title {
-  margin: 0 0.5rem 0.85rem;
+  margin: 0 0.5rem 0.65rem;
   font-size: 1.05rem;
   font-weight: 600;
 }
@@ -479,41 +481,45 @@ body,
   margin-top: 1.1rem;
 }
 
-.user-input-question {
-  margin: 0 0.5rem 0.2rem;
-  font-weight: 500;
+.user-input-header {
+  margin: 0 0.5rem 0.15rem;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
-.user-input-description {
+.user-input-question {
   margin: 0 0.5rem 0.55rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  font-weight: 500;
 }
 
 .user-input-options {
   display: flex;
   flex-direction: column;
-}
-
-.user-input-options > * + * {
-  border-top: 1px solid color-mix(in srgb, var(--stroke) 35%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--stroke) 40%, transparent);
 }
 
 .user-input-option {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
-  gap: 0.15rem;
+  gap: 0.65rem;
+  box-sizing: border-box;
   width: 100%;
   margin: 0;
   padding: 0.7rem 0.5rem;
   border: none;
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 40%, transparent);
   border-radius: 0;
   background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
   font: inherit;
+}
+
+.user-input-option:first-child {
+  border-top: none;
 }
 
 .user-input-option:hover:not(:disabled) {
@@ -526,6 +532,33 @@ body,
 
 .user-input-option.selected .user-input-option-label {
   font-weight: 600;
+}
+
+.user-input-option-mark {
+  flex: none;
+  box-sizing: border-box;
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.user-input-option-mark.multi {
+  border-radius: 3px;
+}
+
+.user-input-option-mark.on {
+  background: var(--text);
+}
+
+.user-input-option-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
 }
 
 .user-input-option-desc {

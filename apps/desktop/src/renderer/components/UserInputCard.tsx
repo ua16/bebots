@@ -63,55 +63,66 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
     return answers;
   };
 
+  const showFormTitle = form.title.trim().length > 0 && form.title.trim().toLowerCase() !== "questions";
+
   return (
     <div className="user-input-card" data-testid="user-input-card">
-      <div className="user-input-title">{form.title}</div>
+      {showFormTitle ? <div className="user-input-title">{form.title}</div> : null}
       {form.fields.map((field) => {
         const multi = field.type === "multiselect";
         const allowCustom = field.custom === true || (field.options?.length ?? 0) === 0;
+        const header = field.title?.trim() || null;
+        const question =
+          field.description?.trim() || field.title?.trim() || field.key;
         return (
           <div key={field.key} className="user-input-field">
-            <div className="user-input-question">
-              {field.title ?? field.description ?? field.key}
-            </div>
-            {field.description && field.title ? (
-              <div className="user-input-description">{field.description}</div>
+            {header && field.description?.trim() ? (
+              <div className="user-input-header">{header}</div>
             ) : null}
-            <div className="user-input-options" role={multi ? "group" : "radiogroup"}>
-              {(field.options ?? []).map((opt) => {
+            <div className="user-input-question">{question}</div>
+            <div className="user-input-options">
+              {(field.options ?? []).map((opt, index) => {
                 const active = (selected[field.key] ?? []).includes(opt.value);
                 return (
                   <button
-                    key={opt.value}
+                    key={`${field.key}:${opt.value}:${index}`}
                     type="button"
-                    role={multi ? "checkbox" : "radio"}
-                    aria-checked={active}
+                    aria-pressed={active}
                     className={"user-input-option" + (active ? " selected" : "")}
                     disabled={busy}
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => toggle(field.key, opt.value, multi)}
                   >
-                    <span className="user-input-option-label">{opt.label}</span>
-                    {opt.description ? (
-                      <span className="user-input-option-desc">{opt.description}</span>
-                    ) : null}
+                    <span
+                      className={
+                        "user-input-option-mark" + (multi ? " multi" : "") + (active ? " on" : "")
+                      }
+                      aria-hidden
+                    />
+                    <span className="user-input-option-text">
+                      <span className="user-input-option-label">{opt.label}</span>
+                      {opt.description && opt.description !== opt.label ? (
+                        <span className="user-input-option-desc">{opt.description}</span>
+                      ) : null}
+                    </span>
                   </button>
                 );
               })}
-              {allowCustom ? (
-                <div className="user-input-custom-row">
-                  <input
-                    className="user-input-custom"
-                    type="text"
-                    disabled={busy}
-                    placeholder="Type your own answer"
-                    value={custom[field.key] ?? ""}
-                    onChange={(e) =>
-                      setCustom((prev) => ({ ...prev, [field.key]: e.target.value }))
-                    }
-                  />
-                </div>
-              ) : null}
             </div>
+            {allowCustom ? (
+              <div className="user-input-custom-row">
+                <input
+                  className="user-input-custom"
+                  type="text"
+                  disabled={busy}
+                  placeholder="Type your own answer"
+                  value={custom[field.key] ?? ""}
+                  onChange={(e) =>
+                    setCustom((prev) => ({ ...prev, [field.key]: e.target.value }))
+                  }
+                />
+              </div>
+            ) : null}
           </div>
         );
       })}
