@@ -179,12 +179,14 @@ async function setupBotService(): Promise<void> {
   runtimeInstance = runtime;
   // Run finalization posts completed conversation runs into the thread as bot
   // replies through the coordinator (declared just below) — PLAN §12 M3:
-  // regardless of which path started the run. The annotated recordBotReply
-  // closure resolves the coordinator after construction, so the two services
-  // can reference each other without a mutable setter.
+  // regardless of which path started the run. The annotated closures resolve
+  // the coordinator after construction, so the two services can reference
+  // each other without a mutable setter.
   const conversationReplyRecorder: ConversationReplyRecorder = {
     recordBotReply: (conversationId, botId, content) =>
       conversationCoordinator.recordBotReply(conversationId, botId, content),
+    recordSystemMarker: (conversationId, content) =>
+      conversationCoordinator.recordSystemMarker(conversationId, content),
   };
   const runService = new RunService({
     runRepo,
