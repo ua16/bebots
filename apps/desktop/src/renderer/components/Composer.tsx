@@ -14,7 +14,7 @@ interface ComposerProps {
   readonly onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   readonly onNewSession: () => void;
   readonly onSubmit: () => void;
-  /** When true, the conversation is blocked on a pending form. */
+  /** When true, sending is blocked (e.g. a reply is already in flight). */
   readonly disabled?: boolean;
 }
 
@@ -71,6 +71,7 @@ export function Composer({
         aria-label="New session"
         title="New session"
         onClick={onNewSession}
+        disabled={disabled}
       >
         <Plus size={24} strokeWidth={2.6} aria-hidden />
       </button>
@@ -78,7 +79,7 @@ export function Composer({
         ref={inputRef}
         value={draft}
         rows={1}
-        placeholder={disabled ? "Answer the question above to continue…" : placeholder}
+        placeholder={placeholder}
         disabled={disabled}
         onChange={onInputChange}
         onKeyDown={onKeyDown}

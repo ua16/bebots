@@ -3,7 +3,11 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { UserInputCard } from "./UserInputCard";
+import {
+  UserInputCard,
+  answersFromComposerDraft,
+  formAllowsComposerAnswer,
+} from "./UserInputCard";
 
 afterEach(cleanup);
 
@@ -26,27 +30,47 @@ const form = {
 } as const;
 
 describe("UserInputCard", () => {
-  it("submits immediately when the first option is clicked", () => {
+  it("submits immediately when an option is clicked", () => {
     const onSubmit = vi.fn();
     render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /bun/i }));
     expect(onSubmit).toHaveBeenCalledWith({ q0: "bun" });
-    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
   });
 
-  it("submits immediately when the second option is clicked", () => {
-    const onSubmit = vi.fn();
-    render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: /npm/i }));
-    expect(onSubmit).toHaveBeenCalledWith({ q0: "npm" });
+  it("does not render an inline custom answer field", () => {
+    render(<UserInputCard form={form} onSubmit={() => {}} onDismiss={() => {}} />);
+    expect(screen.queryByPlaceholderText("Type your own answer")).toBeNull();
+  });
+});
+
+describe("answersFromComposerDraft", () => {
+  it("maps free text onto the custom field", () => {
+    expect(answersFromComposerDraft(form, "  pnpm  ")).toEqual({ q0: "pnpm" });
   });
 
-  it("submits a custom answer on Enter", () => {
-    const onSubmit = vi.fn();
-    render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
-    const input = screen.getByPlaceholderText("Type your own answer");
-    fireEvent.change(input, { target: { value: "pnpm" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith({ q0: "pnpm" });
+  it("returns null for blank draft", () => {
+    expect(answersFromComposerDraft(form, "   ")).toBeNull();
+  });
+});
+
+describe("formAllowsComposerAnswer", () => {
+  it("is true when custom is allowed", () => {
+    expect(formAllowsComposerAnswer(form)).toBe(true);
+  });
+
+  it("is false when options are required", () => {
+    expect(
+      formAllowsComposerAnswer({
+        id: "f2",
+        title: "Pick",
+        fields: [
+          {
+            key: "q0",
+            type: "string",
+            options: [{ value: "a", label: "A" }],
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

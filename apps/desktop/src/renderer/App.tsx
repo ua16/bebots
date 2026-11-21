@@ -28,7 +28,11 @@ import { ToastStack, type ToastItem } from "./components/Toast";
 import { BotEditor } from "./components/BotEditor";
 import { MessageThread } from "./components/MessageThread";
 import { Composer } from "./components/Composer";
-import { UserInputCard } from "./components/UserInputCard";
+import {
+  UserInputCard,
+  answersFromComposerDraft,
+  formAllowsComposerAnswer,
+} from "./components/UserInputCard";
 import { useMentions } from "./hooks/useMentions";
 import "./styles.css";
 
@@ -323,8 +327,41 @@ export function App() {
     }
   };
 
+  const replyPendingUserInput = (answers: Record<string, string | string[]>) => {
+    if (!endpoint || userInputBusy || pendingUserInput === null) return;
+    const { runId, conversationId, afterCreatedAt } = pendingUserInput;
+    setUserInputBusy(true);
+    void apiRequest(
+      endpoint,
+      `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`,
+      (c) =>
+        c.runs.replyRunInput({
+          params: { id: runId },
+          payload: { answers },
+        }),
+    )
+      .then(() => {
+        setPendingUserInput(null);
+        setDraft("");
+        mentions.clearMentions();
+        setPendingReply(true);
+        return watchRunForInput(runId, conversationId, afterCreatedAt, endpoint);
+      })
+      .catch((e) => pushError(String(e)))
+      .finally(() => setUserInputBusy(false));
+  };
+
   const handleSendMessage = async () => {
     if (!endpoint || draft.trim().length === 0) return;
+
+    if (pendingUserInput !== null) {
+      if (!formAllowsComposerAnswer(pendingUserInput.form)) return;
+      const answers = answersFromComposerDraft(pendingUserInput.form, draft);
+      if (answers === null) return;
+      replyPendingUserInput(answers);
+      return;
+    }
+
     // Sending from the empty state (a bot is picked but no thread open) starts
     // a fresh thread with that bot, then posts the message.
     let conversationId = activeConversationId;
@@ -960,38 +997,23 @@ export function App() {
                     )
                       .then(() => {
                         setPendingUserInput(null);
+                        setDraft("");
                         setPendingReply(false);
                         return refreshMessages(conversationId);
                       })
                       .catch((e) => pushError(String(e)))
                       .finally(() => setUserInputBusy(false));
                   }}
-                  onSubmit={(answers) => {
-                    if (!endpoint || userInputBusy) return;
-                    const { runId, conversationId, afterCreatedAt } = pendingUserInput;
-                    setUserInputBusy(true);
-                    void apiRequest(
-                      endpoint,
-                      `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`,
-                      (c) =>
-                        c.runs.replyRunInput({
-                          params: { id: runId },
-                          payload: { answers },
-                        }),
-                    )
-                      .then(() => {
-                        setPendingUserInput(null);
-                        setPendingReply(true);
-                        return watchRunForInput(runId, conversationId, afterCreatedAt, endpoint);
-                      })
-                      .catch((e) => pushError(String(e)))
-                      .finally(() => setUserInputBusy(false));
-                  }}
+                  onSubmit={replyPendingUserInput}
                 />
               )}
               <Composer
                 draft={draft}
-                placeholder={composerPlaceholder}
+                placeholder={
+                  pendingUserInput !== null && formAllowsComposerAnswer(pendingUserInput.form)
+                    ? "Type your own answer…"
+                    : composerPlaceholder
+                }
                 inputRef={composerInputRef}
                 mentionQuery={mentions.mentionQuery}
                 mentionSuggestions={mentions.mentionSuggestions}
@@ -1001,7 +1023,10 @@ export function App() {
                 onKeyDown={mentions.handleKeyDown}
                 onNewSession={() => void handleNewConversation()}
                 onSubmit={() => void handleSendMessage()}
-                disabled={pendingUserInput !== null}
+                disabled={
+                  userInputBusy ||
+                  (pendingUserInput !== null && !formAllowsComposerAnswer(pendingUserInput.form))
+                }
               />
             </>
           )}

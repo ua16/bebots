@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
+import { useState } from "react";
 
 export interface UserInputOption {
   readonly value: string;
@@ -31,20 +31,12 @@ interface UserInputCardProps {
 function buildAnswers(
   form: UserInputForm,
   selected: Record<string, string[]>,
-  custom: Record<string, string>,
 ): Record<string, string | string[]> {
   const answers: Record<string, string | string[]> = {};
   for (const field of form.fields) {
     const picks = selected[field.key] ?? [];
-    const typed = (custom[field.key] ?? "").trim();
-    if (field.type === "multiselect") {
-      const values = typed.length > 0 ? [...picks, typed] : picks;
-      if (values.length > 0) answers[field.key] = values;
-    } else if (typed.length > 0) {
-      answers[field.key] = typed;
-    } else if (picks.length > 0) {
-      answers[field.key] = picks[0]!;
-    }
+    if (picks.length === 0) continue;
+    answers[field.key] = field.type === "multiselect" ? picks : picks[0]!;
   }
   return answers;
 }
@@ -56,19 +48,30 @@ function allFieldsAnswered(
   return form.fields.every((field) => answers[field.key] !== undefined);
 }
 
-/** In-thread ask card: options and optional custom free-text per field. */
+/** Map composer free-text to form answers (alternate to picking an option). */
+export function answersFromComposerDraft(
+  form: UserInputForm,
+  draft: string,
+): Record<string, string | string[]> | null {
+  const text = draft.trim();
+  if (text.length === 0) return null;
+  const customFields = form.fields.filter(
+    (f) => f.custom === true || (f.options?.length ?? 0) === 0,
+  );
+  const field = (customFields.length > 0 ? customFields : form.fields)[0];
+  if (!field) return null;
+  return { [field.key]: field.type === "multiselect" ? [text] : text };
+}
+
+/** True when the composer should accept a free-text alternate answer. */
+export function formAllowsComposerAnswer(form: UserInputForm): boolean {
+  return form.fields.some((f) => f.custom === true || (f.options?.length ?? 0) === 0);
+}
+
+/** In-thread ask card: option rows; free-text alternate goes through the composer. */
 export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserInputCardProps) {
   const [selected, setSelected] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<Record<string, string>>({});
   const hasMultiselect = form.fields.some((f) => f.type === "multiselect");
-
-  const submitIfComplete = (
-    nextSelected: Record<string, string[]>,
-    nextCustom: Record<string, string>,
-  ) => {
-    const answers = buildAnswers(form, nextSelected, nextCustom);
-    if (allFieldsAnswered(form, answers)) onSubmit(answers);
-  };
 
   const chooseOption = (key: string, value: string, multi: boolean) => {
     if (busy) return;
@@ -84,20 +87,8 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
     }
     const nextSelected = { ...selected, [key]: [value] };
     setSelected(nextSelected);
-    submitIfComplete(nextSelected, custom);
-  };
-
-  const submitCustom = (key: string) => {
-    if (busy) return;
-    const typed = (custom[key] ?? "").trim();
-    if (typed.length === 0) return;
-    submitIfComplete(selected, custom);
-  };
-
-  const onCustomKeyDown = (key: string, e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    submitCustom(key);
+    const answers = buildAnswers(form, nextSelected);
+    if (allFieldsAnswered(form, answers)) onSubmit(answers);
   };
 
   const showFormTitle =
@@ -108,7 +99,6 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
       {showFormTitle ? <div className="user-input-title">{form.title}</div> : null}
       {form.fields.map((field) => {
         const multi = field.type === "multiselect";
-        const allowCustom = field.custom === true || (field.options?.length ?? 0) === 0;
         const header = field.title?.trim() || null;
         const question = field.description?.trim() || field.title?.trim() || field.key;
         return (
@@ -117,48 +107,37 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
               <div className="user-input-header">{header}</div>
             ) : null}
             <div className="user-input-question">{question}</div>
-            <div className="user-input-options">
-              {(field.options ?? []).map((opt, index) => {
-                const active = (selected[field.key] ?? []).includes(opt.value);
-                return (
-                  <button
-                    key={`${field.key}:${opt.value}:${index}`}
-                    type="button"
-                    aria-pressed={active}
-                    className={"user-input-option" + (active ? " selected" : "")}
-                    disabled={busy}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => chooseOption(field.key, opt.value, multi)}
-                  >
-                    <span
-                      className={
-                        "user-input-option-mark" + (multi ? " multi" : "") + (active ? " on" : "")
-                      }
-                      aria-hidden
-                    />
-                    <span className="user-input-option-text">
-                      <span className="user-input-option-label">{opt.label}</span>
-                      {opt.description && opt.description !== opt.label ? (
-                        <span className="user-input-option-desc">{opt.description}</span>
-                      ) : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            {allowCustom ? (
-              <div className="user-input-custom-row">
-                <input
-                  className="user-input-custom"
-                  type="text"
-                  disabled={busy}
-                  placeholder="Type your own answer"
-                  value={custom[field.key] ?? ""}
-                  onChange={(e) =>
-                    setCustom((prev) => ({ ...prev, [field.key]: e.target.value }))
-                  }
-                  onKeyDown={(e) => onCustomKeyDown(field.key, e)}
-                />
+            {(field.options?.length ?? 0) > 0 ? (
+              <div className="user-input-options">
+                {(field.options ?? []).map((opt, index) => {
+                  const active = (selected[field.key] ?? []).includes(opt.value);
+                  return (
+                    <button
+                      key={`${field.key}:${opt.value}:${index}`}
+                      type="button"
+                      aria-pressed={active}
+                      className={"user-input-option" + (active ? " selected" : "")}
+                      disabled={busy}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => chooseOption(field.key, opt.value, multi)}
+                    >
+                      <span
+                        className={
+                          "user-input-option-mark" +
+                          (multi ? " multi" : "") +
+                          (active ? " on" : "")
+                        }
+                        aria-hidden
+                      />
+                      <span className="user-input-option-text">
+                        <span className="user-input-option-label">{opt.label}</span>
+                        {opt.description && opt.description !== opt.label ? (
+                          <span className="user-input-option-desc">{opt.description}</span>
+                        ) : null}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
           </div>
@@ -171,7 +150,7 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
             className="user-input-action"
             disabled={busy}
             onClick={() => {
-              const answers = buildAnswers(form, selected, custom);
+              const answers = buildAnswers(form, selected);
               if (Object.keys(answers).length > 0) onSubmit(answers);
             }}
           >
