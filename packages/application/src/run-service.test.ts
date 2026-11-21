@@ -1062,10 +1062,7 @@ describe("RunService session scoping", () => {
       startRun: () => Effect.succeed({ runId: "rt-1", sessionId: "ses_1" } as RunHandle),
       cancelRun: () => Effect.void,
       streamEvents: () => Stream.empty,
-      getResult: () =>
-        Effect.async<RunResult, RuntimeError>(() => {
-          /* hang so the handle stays live */
-        }),
+      getResult: () => Effect.never as Effect.Effect<RunResult, RuntimeError>,
       getForm: () => Effect.succeed(form),
       replyToForm: () => Effect.void,
     };

@@ -123,9 +123,7 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
                     >
                       <span
                         className={
-                          "user-input-option-mark" +
-                          (multi ? " multi" : "") +
-                          (active ? " on" : "")
+                          "user-input-option-mark" + (multi ? " multi" : "") + (active ? " on" : "")
                         }
                         aria-hidden
                       />

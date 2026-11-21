@@ -277,10 +277,8 @@ export function App() {
       try {
         const run = bridge
           ? await bridge.await(runId, 2_000)
-          : ((await apiRequest(
-              endpointAt,
-              `/api/v1/runs/${encodeURIComponent(runId)}`,
-              (c) => c.runs.getRun({ params: { id: runId } }),
+          : ((await apiRequest(endpointAt, `/api/v1/runs/${encodeURIComponent(runId)}`, (c) =>
+              c.runs.getRun({ params: { id: runId } }),
             )) as { status?: string } | null);
         if (!run) return;
         if (run.status === "awaiting_input") {
@@ -331,14 +329,11 @@ export function App() {
     if (!endpoint || userInputBusy || pendingUserInput === null) return;
     const { runId, conversationId, afterCreatedAt } = pendingUserInput;
     setUserInputBusy(true);
-    void apiRequest(
-      endpoint,
-      `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`,
-      (c) =>
-        c.runs.replyRunInput({
-          params: { id: runId },
-          payload: { answers },
-        }),
+    void apiRequest(endpoint, `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`, (c) =>
+      c.runs.replyRunInput({
+        params: { id: runId },
+        payload: { answers },
+      }),
     )
       .then(() => {
         setPendingUserInput(null);

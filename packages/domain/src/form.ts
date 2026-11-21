@@ -150,10 +150,7 @@ export function parseAskAnswerMarker(content: string): AskAnswerMarker | null {
   }
 }
 
-function optionLabel(
-  options: readonly FormOption[] | undefined,
-  value: string,
-): string {
+function optionLabel(options: readonly FormOption[] | undefined, value: string): string {
   const match = options?.find((o) => o.value === value);
   return match?.label ?? value;
 }

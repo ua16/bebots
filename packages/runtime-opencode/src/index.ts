@@ -369,7 +369,11 @@ export class OpenCodeRuntime implements AgentRuntime {
     const sessionId = state.sessionId;
     if (!sessionId) return "(no response)";
     try {
-      const msgs = await this.request<unknown[]>(server, "GET", `/api/session/${sessionId}/message`);
+      const msgs = await this.request<unknown[]>(
+        server,
+        "GET",
+        `/api/session/${sessionId}/message`,
+      );
       const list = Array.isArray(msgs) ? msgs : ((msgs as { data?: unknown[] })?.data ?? []);
       const fresh = (list as any[]).filter((m: any) => {
         if (m?.id === undefined || m?.id === null) return true;
@@ -461,7 +465,9 @@ export class OpenCodeRuntime implements AgentRuntime {
         `/api/session/${state.sessionId}/form`,
       );
       const list = Array.isArray(raw) ? raw : [];
-      const pending = list.find((item) => item && typeof (item as { id?: unknown }).id === "string");
+      const pending = list.find(
+        (item) => item && typeof (item as { id?: unknown }).id === "string",
+      );
       if (!pending) return;
       this.handleNativeEvent(server, state, { type: "form.created", data: { form: pending } });
     } catch {
@@ -485,8 +491,7 @@ export class OpenCodeRuntime implements AgentRuntime {
       });
       const idle = fresh.find((m: any) => m?.type === "idle");
       const completedAssistant = fresh.find(
-        (m: any) =>
-          m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
+        (m: any) => m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
       );
       if (idle || completedAssistant) {
         await this.finishRun(
@@ -835,11 +840,7 @@ export class OpenCodeRuntime implements AgentRuntime {
         const state = self.runs.get(handle.runId);
         if (!state?.sessionId) throw new Error("Unknown run or session");
         const server = await self.ensureServer();
-        await self.request(
-          server,
-          "DELETE",
-          `/api/session/${state.sessionId}/form/${formId}`,
-        );
+        await self.request(server, "DELETE", `/api/session/${state.sessionId}/form/${formId}`);
       },
       catch: (cause: unknown) => makeError("Failed to dismiss form", cause),
     });

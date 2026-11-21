@@ -60,7 +60,11 @@ export function MessageThread({
             const ask = parseAskAnswerMarker(m.content);
             if (ask !== null) {
               return (
-                <div key={m.id} className="message message-ask-marker" data-testid="ask-answer-marker">
+                <div
+                  key={m.id}
+                  className="message message-ask-marker"
+                  data-testid="ask-answer-marker"
+                >
                   <span className="ask-marker-question">{ask.question}</span>{" "}
                   <strong className="ask-marker-answer">{ask.answer}</strong>
                 </div>

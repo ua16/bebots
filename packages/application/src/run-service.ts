@@ -338,11 +338,7 @@ export class RunService {
                 : "failed";
         const latest = yield* self.runRepo.findById(runId);
         if (!latest || latest.status === "cancelled") return;
-        const {
-          pendingFormId: _pf,
-          inputDeadlineAt: _dl,
-          ...latestRest
-        } = latest;
+        const { pendingFormId: _pf, inputDeadlineAt: _dl, ...latestRest } = latest;
         const finalRun: Run = {
           ...latestRest,
           status: terminalStatus,
@@ -497,7 +493,9 @@ export class RunService {
     });
   }
 
-  getInput(id: RunId): Effect.Effect<Form, NotFoundError | ServiceError | RuntimeError | RepositoryError> {
+  getInput(
+    id: RunId,
+  ): Effect.Effect<Form, NotFoundError | ServiceError | RuntimeError | RepositoryError> {
     const self = this;
     return Effect.gen(function* () {
       const run = yield* self.runRepo.findById(id);
@@ -515,7 +513,10 @@ export class RunService {
   replyToInput(
     id: RunId,
     answers: FormAnswers,
-  ): Effect.Effect<Run, NotFoundError | ServiceError | ValidationError | RuntimeError | RepositoryError> {
+  ): Effect.Effect<
+    Run,
+    NotFoundError | ServiceError | ValidationError | RuntimeError | RepositoryError
+  > {
     const self = this;
     return Effect.gen(function* () {
       const run = yield* self.runRepo.findById(id);
@@ -604,7 +605,12 @@ export class RunService {
     const self = this;
     return Effect.gen(function* () {
       const run = yield* self.runRepo.findById(runId);
-      if (!run || run.status === "cancelled" || run.status === "succeeded" || run.status === "failed") {
+      if (
+        !run ||
+        run.status === "cancelled" ||
+        run.status === "succeeded" ||
+        run.status === "failed"
+      ) {
         return;
       }
       const deadline = self.clock.now() + INPUT_DEADLINE_MS;
@@ -643,9 +649,7 @@ export class RunService {
     const delay = Math.max(0, deadlineAt - this.clock.now());
     const timer = setTimeout(() => {
       this.inputDeadlineTimers.delete(runId);
-      void Effect.runPromise(
-        this.expireInput(asRunId(runId)).pipe(Effect.ignore),
-      );
+      void Effect.runPromise(this.expireInput(asRunId(runId)).pipe(Effect.ignore));
     }, delay);
     this.inputDeadlineTimers.set(runId, timer);
   }
