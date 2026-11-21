@@ -108,3 +108,96 @@ export interface PendingRunInput {
   readonly formId: FormId;
   readonly inputDeadlineAt: number;
 }
+
+export const ASK_ANSWER_MARKER_KIND = "ask-answer" as const;
+
+export interface AskAnswerMarker {
+  readonly kind: typeof ASK_ANSWER_MARKER_KIND;
+  readonly question: string;
+  readonly answer: string;
+}
+
+/** Persist ask Q&A as a structured system-message body. */
+export function encodeAskAnswerMarker(question: string, answer: string): string {
+  const marker: AskAnswerMarker = {
+    kind: ASK_ANSWER_MARKER_KIND,
+    question,
+    answer,
+  };
+  return JSON.stringify(marker);
+}
+
+/** Parse a system-message body into an ask marker, or null if unrelated. */
+export function parseAskAnswerMarker(content: string): AskAnswerMarker | null {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<AskAnswerMarker>;
+    if (
+      parsed.kind !== ASK_ANSWER_MARKER_KIND ||
+      typeof parsed.question !== "string" ||
+      typeof parsed.answer !== "string"
+    ) {
+      return null;
+    }
+    return {
+      kind: ASK_ANSWER_MARKER_KIND,
+      question: parsed.question,
+      answer: parsed.answer,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function optionLabel(
+  options: readonly FormOption[] | undefined,
+  value: string,
+): string {
+  const match = options?.find((o) => o.value === value);
+  return match?.label ?? value;
+}
+
+function formatFieldAnswer(field: FormField, raw: FormAnswerValue): string | null {
+  if (field.type === "multiselect") {
+    const values = (Array.isArray(raw) ? raw : [raw])
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .map((v) => optionLabel(field.options, v));
+    return values.length > 0 ? values.join(", ") : null;
+  }
+  if (field.type === "string") {
+    if (typeof raw !== "string" || raw.trim().length === 0) return null;
+    return optionLabel(field.options, raw);
+  }
+  if (typeof raw === "boolean" || typeof raw === "number") return String(raw);
+  if (typeof raw === "string" && raw.trim().length > 0) return raw.trim();
+  return null;
+}
+
+function fieldQuestion(field: FormField): string {
+  const description = field.description?.trim();
+  if (description) return description;
+  const title = field.title?.trim();
+  if (title) return title;
+  return field.key;
+}
+
+/** One thread marker payload per answered form field. */
+export function askAnswerMarkersFromForm(
+  form: Form,
+  answers: FormAnswers,
+): readonly AskAnswerMarker[] {
+  const markers: AskAnswerMarker[] = [];
+  for (const field of form.fields) {
+    const raw = answers[field.key];
+    if (raw === undefined) continue;
+    const answer = formatFieldAnswer(field, raw);
+    if (answer === null) continue;
+    markers.push({
+      kind: ASK_ANSWER_MARKER_KIND,
+      question: fieldQuestion(field),
+      answer,
+    });
+  }
+  return markers;
+}

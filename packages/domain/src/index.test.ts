@@ -7,6 +7,9 @@ import {
   canTransitionApproval,
   isDesktopRenderableForm,
   asFormId,
+  encodeAskAnswerMarker,
+  parseAskAnswerMarker,
+  askAnswerMarkersFromForm,
 } from "./index";
 import type { Form } from "./index";
 
@@ -139,5 +142,48 @@ describe("isDesktopRenderableForm", () => {
         ],
       }),
     ).toBe(false);
+  });
+});
+
+describe("ask answer markers", () => {
+  it("round-trips encode/parse", () => {
+    const encoded = encodeAskAnswerMarker("Which package?", "bun");
+    expect(parseAskAnswerMarker(encoded)).toEqual({
+      kind: "ask-answer",
+      question: "Which package?",
+      answer: "bun",
+    });
+  });
+
+  it("ignores unrelated system content", () => {
+    expect(parseAskAnswerMarker("Scheduled run triggered")).toBeNull();
+    expect(parseAskAnswerMarker("{not json")).toBeNull();
+  });
+
+  it("formats option labels from form answers", () => {
+    const form: Form = {
+      id: asFormId("frm_1"),
+      sessionId: "ses_1",
+      title: "Questions",
+      fields: [
+        {
+          type: "string",
+          key: "q0",
+          title: "Package mgr",
+          description: "Which package manager?",
+          options: [
+            { value: "bun", label: "bun" },
+            { value: "npm", label: "npm" },
+          ],
+          custom: true,
+        },
+      ],
+    };
+    expect(askAnswerMarkersFromForm(form, { q0: "bun" })).toEqual([
+      { kind: "ask-answer", question: "Which package manager?", answer: "bun" },
+    ]);
+    expect(askAnswerMarkersFromForm(form, { q0: "pnpm" })).toEqual([
+      { kind: "ask-answer", question: "Which package manager?", answer: "pnpm" },
+    ]);
   });
 });

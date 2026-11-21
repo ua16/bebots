@@ -414,6 +414,30 @@ body,
   border-radius: var(--radius-dot);
 }
 
+/* Ask Q&A markers: muted question + stronger answer, no bubble chrome. */
+.message-ask-marker {
+  align-self: center;
+  max-width: 90%;
+  margin: 0.15rem 0;
+  padding: 0.15rem 0.4rem;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.ask-marker-question {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.ask-marker-answer {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  font-weight: 600;
+}
+
 .message-content {
   white-space: pre-wrap;
   word-break: break-word;

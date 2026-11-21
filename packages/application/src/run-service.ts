@@ -15,7 +15,12 @@ import type {
   ConversationSessionId,
   TaskId,
 } from "@bebots/domain";
-import { asRunId, isDesktopRenderableForm } from "@bebots/domain";
+import {
+  asRunId,
+  askAnswerMarkersFromForm,
+  encodeAskAnswerMarker,
+  isDesktopRenderableForm,
+} from "@bebots/domain";
 import type { AgentRuntime, RunHandle, RunRequest, RuntimeError, RuntimeEvent } from "./runtime.js";
 import type { ConversationSessionOps } from "./conversation-service.js";
 import type { ConversationReplyRecorder } from "./conversation-run-coordinator.js";
@@ -521,6 +526,11 @@ export class RunService {
       if (!handle || !self.runtime.replyToForm) {
         return yield* Effect.fail(new ServiceError("Runtime cannot reply to forms"));
       }
+      // Hydrate before reply — the form may be gone once OpenCode settles it.
+      const formOption =
+        self.runtime.getForm !== undefined
+          ? yield* self.runtime.getForm(handle, run.pendingFormId).pipe(Effect.option)
+          : Option.none<Form>();
       yield* self.runtime.replyToForm(handle, run.pendingFormId, answers);
       self.clearInputDeadline(String(id));
       const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
@@ -530,6 +540,18 @@ export class RunService {
         updatedAt: self.clock.now(),
       };
       yield* self.runRepo.update(updated);
+
+      const conversationId = run.conversationId;
+      const recorder = self.conversationMessages?.recordSystemMarker;
+      if (conversationId !== undefined && recorder !== undefined && Option.isSome(formOption)) {
+        for (const marker of askAnswerMarkersFromForm(formOption.value, answers)) {
+          yield* recorder(
+            String(conversationId),
+            encodeAskAnswerMarker(marker.question, marker.answer),
+          ).pipe(Effect.ignore);
+        }
+      }
+
       return updated;
     });
   }

@@ -345,7 +345,9 @@ export function App() {
         setDraft("");
         mentions.clearMentions();
         setPendingReply(true);
-        return watchRunForInput(runId, conversationId, afterCreatedAt, endpoint);
+        return refreshMessages(conversationId).then(() =>
+          watchRunForInput(runId, conversationId, afterCreatedAt, endpoint),
+        );
       })
       .catch((e) => pushError(String(e)))
       .finally(() => setUserInputBusy(false));

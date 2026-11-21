@@ -19,6 +19,11 @@ export interface ConversationReplyRecorder {
     botId: string,
     content: string,
   ) => Effect.Effect<void, ValidationError | RepositoryError | ServiceError>;
+  /** Optional: append a non-bubble system marker into the thread (ask Q&A, etc.). */
+  readonly recordSystemMarker?: (
+    conversationId: string,
+    content: string,
+  ) => Effect.Effect<void, ValidationError | RepositoryError | ServiceError>;
 }
 
 export interface SendMessageResult {
@@ -395,6 +400,23 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       // Propagation failures are ignored: the reply itself is already stored,
       // and delivery must not depend on the relay hop.
       yield* self.triggerForMessage(conversationId, message, "bot", botId).pipe(Effect.ignore);
+    });
+  }
+
+  recordSystemMarker(
+    conversationId: string,
+    content: string,
+  ): Effect.Effect<void, ValidationError | RepositoryError | ServiceError> {
+    const conversationService = this.conversationService;
+    return Effect.gen(function* () {
+      if (content.trim().length === 0) return;
+      const conversation = yield* conversationService.getConversation(conversationId);
+      if (!conversation) return;
+      yield* conversationService.addMessage({
+        conversationId,
+        content,
+        senderType: "system",
+      });
     });
   }
 
