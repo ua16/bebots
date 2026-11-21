@@ -26,23 +26,27 @@ const form = {
 } as const;
 
 describe("UserInputCard", () => {
-  it("selects the first option on click and submits it", () => {
+  it("submits immediately when the first option is clicked", () => {
     const onSubmit = vi.fn();
     render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
-    const first = screen.getByRole("button", { name: /bun/i });
-    fireEvent.click(first);
-    expect(first.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.click(screen.getByRole("button", { name: /bun/i }));
     expect(onSubmit).toHaveBeenCalledWith({ q0: "bun" });
+    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
   });
 
-  it("selects the second option on click", () => {
+  it("submits immediately when the second option is clicked", () => {
     const onSubmit = vi.fn();
     render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
-    const second = screen.getByRole("button", { name: /npm/i });
-    fireEvent.click(second);
-    expect(second.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.click(screen.getByRole("button", { name: /npm/i }));
     expect(onSubmit).toHaveBeenCalledWith({ q0: "npm" });
+  });
+
+  it("submits a custom answer on Enter", () => {
+    const onSubmit = vi.fn();
+    render(<UserInputCard form={form} onSubmit={onSubmit} onDismiss={() => {}} />);
+    const input = screen.getByPlaceholderText("Type your own answer");
+    fireEvent.change(input, { target: { value: "pnpm" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledWith({ q0: "pnpm" });
   });
 });
