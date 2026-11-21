@@ -2,6 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { spawn } from "node:child_process";
 import { Effect, Stream } from "effect";
+import type { Form, FormAnswers, FormField, FormId, FormOption } from "@bebots/domain";
+import { asFormId } from "@bebots/domain";
 import type {
   AgentRuntime,
   RunHandle,
@@ -19,6 +21,8 @@ interface ServerInfo {
   readonly password: string;
 }
 
+type EventListener = (event: { type: string; data: any }) => void;
+
 interface RunState {
   readonly runId: string;
   sessionId?: string;
@@ -27,7 +31,13 @@ interface RunState {
   done: boolean;
   result?: RunResult;
   cancelled: boolean;
-  timeoutHandle?: NodeJS.Timeout;
+  /** Wall-clock ms still allowed for non-input work. */
+  remainingTimeoutMs: number;
+  /** When the current running (non-input) segment started. */
+  segmentStartedAt: number | null;
+  awaitingFormId: string | null;
+  priorMessageIds: Set<string>;
+  unsubscribe: (() => void) | null;
 }
 
 function makeError(message: string, cause?: unknown): RuntimeError {
@@ -36,6 +46,94 @@ function makeError(message: string, cause?: unknown): RuntimeError {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mapOption(raw: any): FormOption {
+  return {
+    value: String(raw?.value ?? raw?.label ?? ""),
+    label: String(raw?.label ?? raw?.value ?? "Option"),
+    ...(typeof raw?.description === "string" ? { description: raw.description } : {}),
+  };
+}
+
+function mapField(raw: any): FormField | null {
+  if (!raw || typeof raw.key !== "string" || typeof raw.type !== "string") return null;
+  const base = {
+    key: raw.key,
+    ...(typeof raw.title === "string" ? { title: raw.title } : {}),
+    ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+    ...(typeof raw.required === "boolean" ? { required: raw.required } : {}),
+    ...(typeof raw.hidden === "boolean" ? { hidden: raw.hidden } : {}),
+    ...(Array.isArray(raw.when)
+      ? {
+          when: raw.when
+            .filter((w: any) => w && typeof w.key === "string" && (w.op === "eq" || w.op === "neq"))
+            .map((w: any) => ({ key: w.key, op: w.op as "eq" | "neq", value: w.value })),
+        }
+      : {}),
+  };
+  switch (raw.type) {
+    case "string":
+      return {
+        ...base,
+        type: "string",
+        ...(Array.isArray(raw.options) ? { options: raw.options.map(mapOption) } : {}),
+        ...(typeof raw.custom === "boolean" ? { custom: raw.custom } : {}),
+        ...(typeof raw.default === "string" ? { default: raw.default } : {}),
+        ...(typeof raw.placeholder === "string" ? { placeholder: raw.placeholder } : {}),
+      };
+    case "multiselect":
+      return {
+        ...base,
+        type: "multiselect",
+        options: Array.isArray(raw.options) ? raw.options.map(mapOption) : [],
+        ...(typeof raw.custom === "boolean" ? { custom: raw.custom } : {}),
+        ...(Array.isArray(raw.default) ? { default: raw.default.map(String) } : {}),
+      };
+    case "number":
+      return {
+        ...base,
+        type: "number",
+        ...(typeof raw.default === "number" ? { default: raw.default } : {}),
+        ...(typeof raw.minimum === "number" ? { minimum: raw.minimum } : {}),
+        ...(typeof raw.maximum === "number" ? { maximum: raw.maximum } : {}),
+      };
+    case "integer":
+      return {
+        ...base,
+        type: "integer",
+        ...(typeof raw.default === "number" ? { default: raw.default } : {}),
+        ...(typeof raw.minimum === "number" ? { minimum: raw.minimum } : {}),
+        ...(typeof raw.maximum === "number" ? { maximum: raw.maximum } : {}),
+      };
+    case "boolean":
+      return {
+        ...base,
+        type: "boolean",
+        ...(typeof raw.default === "boolean" ? { default: raw.default } : {}),
+      };
+    case "external":
+      return {
+        ...base,
+        type: "external",
+        url: typeof raw.url === "string" ? raw.url : "",
+      };
+    default:
+      return null;
+  }
+}
+
+function mapForm(raw: any): Form {
+  const fields = (Array.isArray(raw?.fields) ? raw.fields : [])
+    .map(mapField)
+    .filter((f: FormField | null): f is FormField => f !== null);
+  return {
+    id: asFormId(String(raw.id)),
+    sessionId: String(raw.sessionID ?? raw.sessionId ?? ""),
+    title: typeof raw.title === "string" ? raw.title : "Input needed",
+    fields,
+    ...(raw.metadata && typeof raw.metadata === "object" ? { metadata: raw.metadata } : {}),
+  };
 }
 
 export interface OpenCodeRuntimeOptions {
@@ -51,6 +149,7 @@ export class OpenCodeRuntime implements AgentRuntime {
     streaming: true,
     resumableSessions: true,
     cancellation: true,
+    structuredForms: true,
   };
 
   private readonly command: string;
@@ -59,6 +158,9 @@ export class OpenCodeRuntime implements AgentRuntime {
   private server: ServerInfo | null = null;
   private serverStarting: Promise<ServerInfo> | null = null;
   private readonly runs = new Map<string, RunState>();
+  private eventListeners = new Set<EventListener>();
+  private eventLoop: Promise<void> | null = null;
+  private eventAbort: AbortController | null = null;
 
   constructor(options: OpenCodeRuntimeOptions = {}) {
     this.command = options.command ?? "opencode";
@@ -109,6 +211,7 @@ export class OpenCodeRuntime implements AgentRuntime {
       });
       const info: ServerInfo = { process: proc, url, password };
       this.server = info;
+      this.startEventLoop(info);
       return info;
     })();
     this.serverStarting = promise;
@@ -169,10 +272,248 @@ export class OpenCodeRuntime implements AgentRuntime {
       : (json as T);
   }
 
+  private startEventLoop(server: ServerInfo): void {
+    if (this.eventLoop) return;
+    this.eventAbort = new AbortController();
+    const abort = this.eventAbort;
+    this.eventLoop = (async () => {
+      while (!abort.signal.aborted) {
+        try {
+          const res = await fetch(`${server.url}/api/event`, {
+            headers: {
+              Authorization: this.authHeader(server.password),
+              Accept: "text/event-stream",
+            },
+            signal: abort.signal,
+          });
+          if (!res.ok || !res.body) {
+            await sleep(500);
+            continue;
+          }
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!abort.signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split("\n");
+            buffer = parts.pop() ?? "";
+            for (const line of parts) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+              const payload = trimmed.slice(5).trim();
+              if (!payload || payload === "[DONE]") continue;
+              try {
+                const parsed = JSON.parse(payload) as { type?: string; data?: unknown };
+                if (typeof parsed.type === "string") {
+                  const event = { type: parsed.type, data: parsed.data ?? parsed };
+                  for (const listener of this.eventListeners) listener(event);
+                }
+              } catch {
+                /* ignore malformed frames */
+              }
+            }
+          }
+        } catch (e) {
+          if (abort.signal.aborted) return;
+          if (this.extraLogs) {
+            console.log("[opencode] event stream error", e);
+          }
+          await sleep(500);
+        }
+      }
+    })();
+  }
+
+  private subscribe(listener: EventListener): () => void {
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
   private notify(state: RunState): void {
     const waiters = [...state.waiters];
     state.waiters.length = 0;
     for (const w of waiters) w();
+  }
+
+  private pushEvent(state: RunState, event: RuntimeEvent): void {
+    state.events.push(event);
+    this.notify(state);
+  }
+
+  private pauseTimeout(state: RunState): void {
+    if (state.segmentStartedAt !== null) {
+      const elapsed = Date.now() - state.segmentStartedAt;
+      state.remainingTimeoutMs = Math.max(0, state.remainingTimeoutMs - elapsed);
+      state.segmentStartedAt = null;
+    }
+  }
+
+  private resumeTimeout(state: RunState): void {
+    if (state.awaitingFormId === null && state.segmentStartedAt === null && !state.done) {
+      state.segmentStartedAt = Date.now();
+    }
+  }
+
+  private remainingMs(state: RunState): number {
+    if (state.awaitingFormId !== null || state.segmentStartedAt === null) {
+      return state.remainingTimeoutMs;
+    }
+    return Math.max(0, state.remainingTimeoutMs - (Date.now() - state.segmentStartedAt));
+  }
+
+  private async extractSummary(server: ServerInfo, state: RunState): Promise<string> {
+    const sessionId = state.sessionId;
+    if (!sessionId) return "(no response)";
+    try {
+      const msgs = await this.request<unknown[]>(server, "GET", `/api/session/${sessionId}/message`);
+      const list = Array.isArray(msgs) ? msgs : ((msgs as { data?: unknown[] })?.data ?? []);
+      const fresh = (list as any[]).filter((m: any) => {
+        if (m?.id === undefined || m?.id === null) return true;
+        return !state.priorMessageIds.has(String(m.id));
+      });
+      const assistants = fresh
+        .filter((m: any) => m?.type === "assistant")
+        .sort((a: any, b: any) => {
+          const ta = a?.time?.created ?? a?.createdAt ?? 0;
+          const tb = b?.time?.created ?? b?.createdAt ?? 0;
+          return (tb as number) - (ta as number);
+        });
+      const extractText = (m: any): string => {
+        if (!m) return "";
+        if (Array.isArray(m.content)) {
+          return m.content
+            .filter(
+              (c: any) =>
+                c && (c.type === undefined || c.type === "text" || c.type === "output_text"),
+            )
+            .map((c: any) => c?.text ?? c?.content ?? c?.value)
+            .filter(Boolean)
+            .join("\n");
+        }
+        if (typeof m.content === "string") return m.content;
+        if (typeof m.text === "string") return m.text;
+        return "";
+      };
+      let text = "";
+      for (const a of assistants) {
+        const t = extractText(a);
+        if (t.trim().length > 0) {
+          text = t;
+          break;
+        }
+      }
+      if (text.trim().length === 0) {
+        text = assistants.map(extractText).filter(Boolean).join("\n");
+      }
+      return text.trim().length > 0 ? text : "(no response)";
+    } catch {
+      return "(no response)";
+    }
+  }
+
+  private async finishRun(
+    server: ServerInfo,
+    state: RunState,
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    summary?: string,
+  ): Promise<void> {
+    if (state.done) return;
+    state.unsubscribe?.();
+    state.unsubscribe = null;
+    state.awaitingFormId = null;
+    state.segmentStartedAt = null;
+    const sessionId = state.sessionId;
+    let text = summary;
+    if (text === undefined && outcome === "succeeded") {
+      text = await this.extractSummary(server, state);
+    }
+    const baseResult = {
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    };
+    if (outcome === "succeeded") {
+      this.pushEvent(state, { _tag: "completed", summary: text ?? "(no response)" });
+      state.result = { exitCode: 0, summary: text ?? "(no response)", ...baseResult };
+    } else if (outcome === "cancelled") {
+      this.pushEvent(state, { _tag: "failed", error: makeError("Cancelled") });
+      state.result = { exitCode: 130, summary: "cancelled", ...baseResult };
+    } else if (outcome === "timed_out") {
+      this.pushEvent(state, { _tag: "failed", error: makeError("Timed out") });
+      state.result = { exitCode: 124, summary: "timed out", ...baseResult };
+    } else {
+      this.pushEvent(state, { _tag: "failed", error: makeError(text ?? "Failed") });
+      state.result = { exitCode: 1, summary: text ?? "failed", ...baseResult };
+    }
+    state.done = true;
+    this.notify(state);
+  }
+
+  private handleNativeEvent(
+    server: ServerInfo,
+    state: RunState,
+    event: { type: string; data: any },
+  ): void {
+    if (state.done || state.cancelled) return;
+    const sessionId = state.sessionId;
+    if (!sessionId) return;
+
+    const eventSession =
+      event.data?.sessionID ??
+      event.data?.sessionId ??
+      event.data?.form?.sessionID ??
+      event.data?.form?.sessionId;
+
+    if (event.type === "form.created") {
+      const form = event.data?.form ?? event.data;
+      if (!form || String(form.sessionID ?? form.sessionId) !== sessionId) return;
+      const formId = String(form.id);
+      state.awaitingFormId = formId;
+      this.pauseTimeout(state);
+      this.pushEvent(state, {
+        _tag: "user_input_requested",
+        formId: asFormId(formId),
+        at: new Date(),
+      });
+      return;
+    }
+
+    if (event.type === "form.replied" || event.type === "form.cancelled") {
+      const id = String(event.data?.id ?? "");
+      if (eventSession && String(eventSession) !== sessionId) return;
+      if (state.awaitingFormId && id && id !== state.awaitingFormId) return;
+      if (state.awaitingFormId) {
+        const formId = asFormId(state.awaitingFormId);
+        state.awaitingFormId = null;
+        this.resumeTimeout(state);
+        this.pushEvent(state, {
+          _tag: "user_input_resolved",
+          formId,
+          outcome: event.type === "form.replied" ? "answered" : "dismissed",
+          at: new Date(),
+        });
+      }
+      return;
+    }
+
+    const isExecEnd =
+      event.type === "session.execution.succeeded" ||
+      event.type === "session.execution.failed" ||
+      event.type === "session.execution.interrupted";
+    if (isExecEnd) {
+      if (String(eventSession) !== sessionId) return;
+      void (async () => {
+        if (event.type === "session.execution.succeeded") {
+          await this.finishRun(server, state, "succeeded");
+        } else if (event.type === "session.execution.interrupted" || state.cancelled) {
+          await this.finishRun(server, state, "cancelled");
+        } else {
+          await this.finishRun(server, state, "failed", "execution failed");
+        }
+      })();
+    }
   }
 
   startRun(request: RunRequest): Effect.Effect<RunHandle, RuntimeError> {
@@ -182,9 +523,6 @@ export class OpenCodeRuntime implements AgentRuntime {
         const server = await self.ensureServer();
         const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-        // Resolve or create session. When the stored runtime session is gone
-        // (expired/purged), start a genuinely NEW session transparently —
-        // never re-create the old id (PLAN §6.4).
         let sessionId: string | undefined = request.sessionId;
         if (sessionId) {
           try {
@@ -211,18 +549,15 @@ export class OpenCodeRuntime implements AgentRuntime {
           waiters: [],
           done: false,
           cancelled: false,
+          remainingTimeoutMs: request.timeoutMs,
+          segmentStartedAt: Date.now(),
+          awaitingFormId: null,
+          priorMessageIds: new Set(),
+          unsubscribe: null,
         };
         this.runs.set(runId, state);
         this.notify(state);
 
-        // Apply the requested model (bot override or app default) on the
-        // freshly created-or-resolved session, BEFORE the prior-message
-        // snapshot below: the model switch records a message on the session,
-        // and that snapshot must treat it as belonging to this run and not
-        // the previous ones (issue #21 filtering). A failed switch (e.g. the
-        // model id is no longer known) is surfaced as a progress event —
-        // the run then proceeds on OpenCode's own default model rather
-        // than failing outright.
         const requestedModel = request.model;
         if (requestedModel) {
           try {
@@ -237,11 +572,6 @@ export class OpenCodeRuntime implements AgentRuntime {
           }
         }
 
-        // Snapshot the messages already in the session BEFORE prompting. On a
-        // resumed session this run must only report its own messages — the
-        // first assistant reply in the whole history belongs to the original
-        // run (found via #20's diagnosis: every resumed run re-answered with
-        // the first reply the session ever produced).
         const priorMessages = await self.request<unknown[]>(
           server,
           "GET",
@@ -250,109 +580,47 @@ export class OpenCodeRuntime implements AgentRuntime {
         const prior = Array.isArray(priorMessages)
           ? priorMessages
           : ((priorMessages as { data?: unknown[] })?.data ?? []);
-        const priorIds = new Set(
+        state.priorMessageIds = new Set(
           prior
             .map((m) => (m as { id?: unknown })?.id)
             .filter((id): id is string | number => id !== undefined && id !== null)
             .map((id) => String(id)),
         );
-        // Send prompt.
+
+        state.unsubscribe = self.subscribe((event) => {
+          self.handleNativeEvent(server, state, event);
+        });
+
         await self.request(server, "POST", `/api/session/${sessionId}/prompt`, {
           text: request.prompt,
         });
 
-        // Background completion polling.
-        const poll = async () => {
-          const deadline = Date.now() + request.timeoutMs;
+        // Watch remaining execution timeout (paused while awaiting forms).
+        void (async () => {
           try {
-            while (!state.cancelled && Date.now() < deadline) {
-              await sleep(500);
-              if (state.cancelled) break;
-              const msgs = await self.request<unknown[]>(
-                server,
-                "GET",
-                `/api/session/${sessionId}/message`,
-              );
-              const list = Array.isArray(msgs)
-                ? msgs
-                : ((msgs as { data?: unknown[] })?.data ?? []);
-              // Only this run's messages: everything already in the session
-              // before the prompt belongs to earlier runs (issue #21) — the
-              // first assistant reply in session history is the original
-              // run's, not this run's.
-              const fresh = (list as any[]).filter((m: any) => {
-                if (m?.id === undefined || m?.id === null) return true;
-                return !priorIds.has(String(m.id));
-              });
-              const idle = fresh.find((m: any) => m?.type === "idle");
-              // Some OpenCode builds surface completion on the assistant
-              // message itself (finish) rather than a separate idle entry;
-              // treat either as terminal so runs do not hang forever.
-              const completedAssistant = fresh.find(
-                (m: any) =>
-                  m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
-              );
-              const terminal = idle ?? (completedAssistant ? { outcome: "succeeded" } : undefined);
-              if (terminal) {
-                // Prefer the most recent assistant that actually carries text;
-                // fall back to aggregating every fresh assistant's text parts
-                // so a tool-only intermediate reply never blanks the summary.
-                const assistants = fresh
-                  .filter((m: any) => m?.type === "assistant")
-                  .sort((a: any, b: any) => {
-                    const ta = a?.time?.created ?? a?.createdAt ?? 0;
-                    const tb = b?.time?.created ?? b?.createdAt ?? 0;
-                    return (tb as number) - (ta as number);
-                  });
-                const extractText = (m: any): string => {
-                  if (!m) return "";
-                  if (Array.isArray(m.content)) {
-                    return m.content
-                      .filter(
-                        (c: any) =>
-                          c &&
-                          (c.type === undefined || c.type === "text" || c.type === "output_text"),
-                      )
-                      .map((c: any) => c?.text ?? c?.content ?? c?.value)
-                      .filter(Boolean)
-                      .join("\n");
-                  }
-                  if (typeof m.content === "string") return m.content;
-                  if (typeof m.text === "string") return m.text;
-                  return "";
-                };
-                let text = "";
-                for (const a of assistants) {
-                  const t = extractText(a);
-                  if (t.trim().length > 0) {
-                    text = t;
-                    break;
-                  }
+            while (!state.done && !state.cancelled) {
+              if (state.awaitingFormId !== null) {
+                await sleep(200);
+                continue;
+              }
+              const left = self.remainingMs(state);
+              if (left <= 0) {
+                try {
+                  await self.request(
+                    server,
+                    "POST",
+                    `/api/session/${sessionId}/interrupt?resume=false`,
+                    {},
+                  );
+                } catch {
+                  /* ignore */
                 }
-                if (text.trim().length === 0) {
-                  text = assistants.map(extractText).filter(Boolean).join("\n");
-                }
-                // Never post an empty summary for a succeeded run — the reply
-                // loop requires non-empty content to record a bot reply.
-                if (text.trim().length === 0 && (idle?.outcome === "succeeded" || !idle)) {
-                  text = "(no response)";
-                }
-                const exitCode = idle !== undefined ? (idle.outcome === "succeeded" ? 0 : 1) : 0;
-                if (!state.cancelled) {
-                  state.events.push({ _tag: "completed", summary: text });
-                  state.result = {
-                    exitCode,
-                    summary: text,
-                    sessionId,
-                  };
-                }
-                state.done = true;
-                this.notify(state);
+                await self.finishRun(server, state, "timed_out");
                 return;
               }
+              await sleep(Math.min(500, left));
             }
-            if (state.cancelled) {
-              // attempt interrupt
+            if (state.cancelled && !state.done) {
               try {
                 await self.request(
                   server,
@@ -363,36 +631,19 @@ export class OpenCodeRuntime implements AgentRuntime {
               } catch {
                 /* ignore */
               }
-              state.events.push({ _tag: "failed", error: makeError("Cancelled") });
-              state.result = { exitCode: 130, summary: "cancelled", sessionId };
-              state.done = true;
-              this.notify(state);
-              return;
+              await self.finishRun(server, state, "cancelled");
             }
-            // timeout
-            try {
-              await self.request(
-                server,
-                "POST",
-                `/api/session/${sessionId}/interrupt?resume=false`,
-                {},
-              );
-            } catch {
-              /* ignore */
-            }
-            state.events.push({ _tag: "failed", error: makeError("Timed out") });
-            state.result = { exitCode: 124, summary: "timed out", sessionId };
-            state.done = true;
-            this.notify(state);
           } catch (e: unknown) {
-            const err = makeError(e instanceof Error ? e.message : String(e));
-            state.events.push({ _tag: "failed", error: err });
-            state.result = { exitCode: 1, summary: err.message, sessionId };
-            state.done = true;
-            this.notify(state);
+            if (!state.done) {
+              await self.finishRun(
+                server,
+                state,
+                "failed",
+                e instanceof Error ? e.message : String(e),
+              );
+            }
           }
-        };
-        void poll();
+        })();
 
         return { runId, sessionId };
       },
@@ -409,6 +660,17 @@ export class OpenCodeRuntime implements AgentRuntime {
         state.cancelled = true;
         if (state.sessionId) {
           const server = await self.ensureServer();
+          if (state.awaitingFormId) {
+            try {
+              await self.request(
+                server,
+                "DELETE",
+                `/api/session/${state.sessionId}/form/${state.awaitingFormId}`,
+              );
+            } catch {
+              /* ignore */
+            }
+          }
           try {
             await self.request(
               server,
@@ -470,6 +732,61 @@ export class OpenCodeRuntime implements AgentRuntime {
           : makeError("Failed to get result", cause),
     });
   }
+
+  getForm(handle: RunHandle, formId: FormId): Effect.Effect<Form, RuntimeError> {
+    const self = this;
+    return Effect.tryPromise({
+      try: async () => {
+        const state = self.runs.get(handle.runId);
+        if (!state?.sessionId) throw new Error("Unknown run or session");
+        const server = await self.ensureServer();
+        const raw = await self.request<any>(
+          server,
+          "GET",
+          `/api/session/${state.sessionId}/form/${formId}`,
+        );
+        return mapForm(raw);
+      },
+      catch: (cause: unknown) => makeError("Failed to get form", cause),
+    });
+  }
+
+  replyToForm(
+    handle: RunHandle,
+    formId: FormId,
+    answers: FormAnswers,
+  ): Effect.Effect<void, RuntimeError> {
+    const self = this;
+    return Effect.tryPromise({
+      try: async () => {
+        const state = self.runs.get(handle.runId);
+        if (!state?.sessionId) throw new Error("Unknown run or session");
+        const server = await self.ensureServer();
+        await self.request(server, "POST", `/api/session/${state.sessionId}/form/${formId}/reply`, {
+          answer: answers,
+        });
+      },
+      catch: (cause: unknown) => makeError("Failed to reply to form", cause),
+    });
+  }
+
+  dismissForm(handle: RunHandle, formId: FormId): Effect.Effect<void, RuntimeError> {
+    const self = this;
+    return Effect.tryPromise({
+      try: async () => {
+        const state = self.runs.get(handle.runId);
+        if (!state?.sessionId) throw new Error("Unknown run or session");
+        const server = await self.ensureServer();
+        await self.request(
+          server,
+          "DELETE",
+          `/api/session/${state.sessionId}/form/${formId}`,
+        );
+      },
+      catch: (cause: unknown) => makeError("Failed to dismiss form", cause),
+    });
+  }
+
   listModels(): Effect.Effect<readonly RuntimeModelInfo[], RuntimeError> {
     const self = this;
     return Effect.tryPromise({
@@ -501,7 +818,12 @@ export class OpenCodeRuntime implements AgentRuntime {
       catch: (cause: unknown) => makeError("Failed to list models", cause),
     });
   }
+
   close(): void {
+    this.eventAbort?.abort();
+    this.eventAbort = null;
+    this.eventLoop = null;
+    this.eventListeners.clear();
     if (this.server) {
       try {
         this.server.process.kill();

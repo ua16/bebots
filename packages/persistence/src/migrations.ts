@@ -276,6 +276,21 @@ const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 18,
+    name: "runs_pending_input",
+    run: (db) => {
+      const cols = db.prepare("PRAGMA table_info(runs)").all() as unknown as { name: string }[];
+      if (cols.length === 0) return;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has("pending_form_id")) {
+        db.exec("ALTER TABLE runs ADD COLUMN pending_form_id TEXT;");
+      }
+      if (!names.has("input_deadline_at")) {
+        db.exec("ALTER TABLE runs ADD COLUMN input_deadline_at INTEGER;");
+      }
+    },
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {

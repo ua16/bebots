@@ -268,6 +268,20 @@ export const makeRoutes = (deps: ApiDeps) => {
             if (!run) return yield* new HttpApiError.NotFound();
             return run;
           }),
+        getRunInput: ({ params }) =>
+          deps.runService.getInput(asRunId(params.id)).pipe(Effect.mapError(mapError)),
+        replyRunInput: ({ params, payload }) =>
+          deps.runService
+            .replyToInput(
+              asRunId(params.id),
+              (payload?.answers ?? {}) as Record<
+                string,
+                string | number | boolean | ReadonlyArray<string>
+              >,
+            )
+            .pipe(Effect.mapError(mapError)),
+        dismissRunInput: ({ params }) =>
+          deps.runService.dismissInput(asRunId(params.id)).pipe(Effect.mapError(mapError)),
       });
     }),
   );

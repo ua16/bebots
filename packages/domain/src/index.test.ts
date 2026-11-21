@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { asBotId, asRunId, canTransitionTask, canTransitionApproval } from "./index";
+import {
+  asBotId,
+  asRunId,
+  canTransitionRun,
+  canTransitionTask,
+  canTransitionApproval,
+  isDesktopRenderableForm,
+  asFormId,
+} from "./index";
+import type { Form } from "./index";
 
 describe("asBotId", () => {
   it("accepts a non-empty value", () => {
@@ -62,5 +71,73 @@ describe("asRunId", () => {
 
   it("rejects a whitespace-only value", () => {
     expect(() => asRunId("   ")).toThrow();
+  });
+});
+
+describe("run transitions", () => {
+  it("allows running -> awaiting_input", () => {
+    expect(canTransitionRun("running", "awaiting_input")).toBe(true);
+  });
+
+  it("allows awaiting_input -> running", () => {
+    expect(canTransitionRun("awaiting_input", "running")).toBe(true);
+  });
+
+  it("allows awaiting_input -> cancelled", () => {
+    expect(canTransitionRun("awaiting_input", "cancelled")).toBe(true);
+  });
+
+  it("rejects awaiting_input -> succeeded", () => {
+    expect(canTransitionRun("awaiting_input", "succeeded")).toBe(false);
+  });
+});
+
+describe("isDesktopRenderableForm", () => {
+  const base = {
+    id: asFormId("frm_1"),
+    sessionId: "ses_1",
+    title: "Choose",
+  };
+
+  it("accepts string and multiselect fields with custom", () => {
+    const form: Form = {
+      ...base,
+      fields: [
+        {
+          type: "string",
+          key: "q0",
+          options: [{ value: "a", label: "A" }],
+          custom: true,
+        },
+        {
+          type: "multiselect",
+          key: "q1",
+          options: [{ value: "b", label: "B" }],
+          custom: true,
+        },
+      ],
+    };
+    expect(isDesktopRenderableForm(form)).toBe(true);
+  });
+
+  it("rejects number and when-gated fields", () => {
+    expect(
+      isDesktopRenderableForm({
+        ...base,
+        fields: [{ type: "number", key: "n" }],
+      }),
+    ).toBe(false);
+    expect(
+      isDesktopRenderableForm({
+        ...base,
+        fields: [
+          {
+            type: "string",
+            key: "q0",
+            when: [{ key: "other", op: "eq", value: "x" }],
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

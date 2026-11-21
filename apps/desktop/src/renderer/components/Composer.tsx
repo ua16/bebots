@@ -14,6 +14,8 @@ interface ComposerProps {
   readonly onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   readonly onNewSession: () => void;
   readonly onSubmit: () => void;
+  /** When true, the conversation is blocked on a pending form. */
+  readonly disabled?: boolean;
 }
 
 /** Composer: mention popup, new-session pill, auto-growing textarea, send button. */
@@ -29,13 +31,14 @@ export function Composer({
   onKeyDown,
   onNewSession,
   onSubmit,
+  disabled = false,
 }: ComposerProps) {
   return (
     <form
-      className="composer"
+      className={"composer" + (disabled ? " composer-blocked" : "")}
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit();
+        if (!disabled) onSubmit();
       }}
     >
       {mentionQuery !== null && mentionSuggestions.length > 0 && (
@@ -75,11 +78,18 @@ export function Composer({
         ref={inputRef}
         value={draft}
         rows={1}
-        placeholder={placeholder}
+        placeholder={disabled ? "Answer the question above to continue…" : placeholder}
+        disabled={disabled}
         onChange={onInputChange}
         onKeyDown={onKeyDown}
       />
-      <button type="submit" className="icon-send" aria-label="Send" title="Send">
+      <button
+        type="submit"
+        className="icon-send"
+        aria-label="Send"
+        title="Send"
+        disabled={disabled}
+      >
         <ArrowUp size={24} strokeWidth={3} aria-hidden />
       </button>
     </form>

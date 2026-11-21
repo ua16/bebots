@@ -1,5 +1,5 @@
 import { Effect, Stream } from "effect";
-import type { BotId, ModelRef } from "@bebots/domain";
+import type { BotId, Form, FormAnswers, FormId, ModelRef } from "@bebots/domain";
 
 /**
  * Capability flags a runtime may or may not support. Differences between
@@ -9,6 +9,8 @@ export interface RuntimeCapabilities {
   readonly streaming: boolean;
   readonly resumableSessions: boolean;
   readonly cancellation: boolean;
+  /** Provider can raise structured forms mid-run (OpenCode question tool, etc.). */
+  readonly structuredForms?: boolean;
 }
 
 export interface RuntimeError {
@@ -36,6 +38,17 @@ export type RuntimeEvent =
   | { readonly _tag: "started"; readonly at: Date }
   | { readonly _tag: "progress"; readonly message: string }
   | { readonly _tag: "output"; readonly chunk: string }
+  | {
+      readonly _tag: "user_input_requested";
+      readonly formId: FormId;
+      readonly at: Date;
+    }
+  | {
+      readonly _tag: "user_input_resolved";
+      readonly formId: FormId;
+      readonly outcome: "answered" | "dismissed" | "expired" | "unsupported";
+      readonly at: Date;
+    }
   | { readonly _tag: "completed"; readonly summary: string }
   | { readonly _tag: "failed"; readonly error: RuntimeError };
 
@@ -75,4 +88,14 @@ export interface AgentRuntime {
    * runtimes without a model catalog may omit it.
    */
   listModels?(): Effect.Effect<readonly RuntimeModelInfo[], RuntimeError>;
+
+  getForm?(handle: RunHandle, formId: FormId): Effect.Effect<Form, RuntimeError>;
+
+  replyToForm?(
+    handle: RunHandle,
+    formId: FormId,
+    answers: FormAnswers,
+  ): Effect.Effect<void, RuntimeError>;
+
+  dismissForm?(handle: RunHandle, formId: FormId): Effect.Effect<void, RuntimeError>;
 }

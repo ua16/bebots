@@ -519,6 +519,18 @@ async function setupBotService(): Promise<void> {
       runService.awaitRun(asRunId(id as string), timeoutMs as number | undefined),
     );
   });
+  ipcMain.handle("bebots:runs:getInput", async (_event, id: string) => {
+    return Effect.runPromise(runService.getInput(asRunId(id as string)));
+  });
+  ipcMain.handle(
+    "bebots:runs:replyInput",
+    async (_event, id: string, answers: Record<string, string | number | boolean | string[]>) => {
+      return Effect.runPromise(runService.replyToInput(asRunId(id as string), answers));
+    },
+  );
+  ipcMain.handle("bebots:runs:dismissInput", async (_event, id: string) => {
+    return Effect.runPromise(runService.dismissInput(asRunId(id as string)));
+  });
 
   // HTTP server
   const routes = makeRoutes({

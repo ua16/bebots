@@ -73,20 +73,107 @@ function makeFetch(
 }
 
 /**
- * A handler that models a happy-path OpenCode server. `messages` is returned
- * for the session message poll; when it contains an `idle` entry the run
- * completes. The first message GET (the pre-prompt snapshot the runtime takes
- * on start, issue #21) returns nothing — fresh messages only exist after the
- * prompt has been sent.
+ * Happy-path OpenCode server: completion comes from `session.execution.*`
+ * on the event stream after each prompt; messages are fetched once for the summary.
  */
-function happyHandler(messages: unknown[]) {
+function happyHandler(messages: unknown[], sessionId = "sess-1") {
   let messageCalls = 0;
+  let sessionSeq = 0;
+  const enc = new TextEncoder();
+  const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+
+  const emitExec = (id: string) => {
+    const frame = enc.encode(
+      `data: ${JSON.stringify({
+        type: "session.execution.succeeded",
+        data: { sessionID: id },
+      })}\n\n`,
+    );
+    for (const controller of controllers) {
+      try {
+        controller.enqueue(frame);
+      } catch {
+        /* closed */
+      }
+    }
+  };
+
   return (method: string, path: string): Response => {
+    if (method === "GET" && path === "/api/event") {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controllers.push(controller);
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify({ type: "server.connected", data: {} })}\n\n`),
+          );
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
     if (method === "GET" && path.endsWith("/message")) {
       messageCalls += 1;
       return jsonResponse(messageCalls === 1 ? [] : messages);
     }
-    if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
+    if (method === "POST" && path === "/api/session") {
+      sessionSeq += 1;
+      const id = sessionSeq === 1 ? sessionId : `${sessionId}-${sessionSeq}`;
+      return jsonResponse({ id });
+    }
+    if (method === "POST" && path.endsWith("/prompt")) {
+      const parts = path.split("/");
+      const id = parts[parts.indexOf("session") + 1] ?? sessionId;
+      queueMicrotask(() => emitExec(id));
+      return noContent();
+    }
+    if (method === "POST" && path.endsWith("/interrupt")) return noContent();
+    if (method === "DELETE" && path.includes("/form/")) return noContent();
+    if (method === "POST" && path.includes("/form/") && path.endsWith("/reply")) return noContent();
+    if (method === "GET" && path.includes("/form/")) {
+      return jsonResponse({
+        id: "frm_1",
+        sessionID: sessionId,
+        title: "Pick one",
+        fields: [
+          {
+            type: "string",
+            key: "q0",
+            title: "Choice",
+            options: [{ value: "a", label: "A" }],
+            custom: true,
+          },
+        ],
+      });
+    }
+    if (method === "GET" && path.startsWith("/api/session/")) {
+      return jsonResponse({ id: path.split("/").pop() });
+    }
+    if (method === "GET" && path === "/api/model") return jsonResponse({ data: [] });
+    return jsonResponse({ error: "not found" }, 404);
+  };
+}
+
+/** Never completes via events — used for cancel/timeout tests. */
+function hangingHandler(sessionId = "sess-1") {
+  const enc = new TextEncoder();
+  return (method: string, path: string): Response => {
+    if (method === "GET" && path === "/api/event") {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify({ type: "server.connected", data: {} })}\n\n`),
+          );
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    if (method === "GET" && path.endsWith("/message")) return jsonResponse([]);
+    if (method === "POST" && path === "/api/session") return jsonResponse({ id: sessionId });
     if (method === "POST" && path.endsWith("/prompt")) return noContent();
     if (method === "POST" && path.endsWith("/interrupt")) return noContent();
     if (method === "GET" && path.startsWith("/api/session/")) {
@@ -214,28 +301,29 @@ describe("OpenCodeRuntime", () => {
       { id: "m-hist-idle", type: "idle", outcome: "succeeded" },
       { id: "m-hist-assistant", type: "assistant", content: [{ text: "stale first reply" }] },
     ];
+    const fresh = [
+      ...historical,
+      { id: "m-new-idle", type: "idle", outcome: "succeeded" },
+      {
+        id: "m-new-assistant",
+        type: "assistant",
+        content: [{ text: "the real answer" }],
+      },
+    ];
     let prompted = false;
+    const base = happyHandler(fresh, "existing");
     const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path === "/api/session/existing") {
+        return jsonResponse({ id: "existing" });
+      }
       if (method === "GET" && path.endsWith("/message")) {
-        return jsonResponse(
-          prompted
-            ? [
-                ...historical,
-                { id: "m-new-idle", type: "idle", outcome: "succeeded" },
-                {
-                  id: "m-new-assistant",
-                  type: "assistant",
-                  content: [{ text: "the real answer" }],
-                },
-              ]
-            : historical,
-        );
+        return jsonResponse(prompted ? fresh : historical);
       }
       if (method === "POST" && path.endsWith("/prompt")) {
         prompted = true;
-        return noContent();
+        return base(method, path);
       }
-      return happyHandler([])(method, path);
+      return base(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -247,33 +335,18 @@ describe("OpenCodeRuntime", () => {
 
   it("posts only text parts as the summary, not reasoning parts", async () => {
     announceServer(proc);
-    let prompted = false;
-    const { fn: fetchMock } = makeFetch((method, path) => {
-      if (method === "GET" && path.endsWith("/message")) {
-        return jsonResponse(
-          prompted
-            ? [
-                {
-                  id: "m-assistant",
-                  type: "assistant",
-                  content: [
-                    { type: "reasoning", text: "internal model thoughts" },
-                    { type: "text", text: "the visible answer" },
-                  ],
-                },
-                { id: "m-idle", type: "idle", outcome: "succeeded" },
-              ]
-            : [],
-        );
-      }
-      if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
-      if (method === "POST" && path.endsWith("/prompt")) {
-        prompted = true;
-        return noContent();
-      }
-      if (method === "POST" && path.endsWith("/interrupt")) return noContent();
-      return jsonResponse({ error: "not found" }, 404);
-    });
+    const { fn: fetchMock } = makeFetch(
+      happyHandler([
+        {
+          id: "m-assistant",
+          type: "assistant",
+          content: [
+            { type: "reasoning", text: "internal model thoughts" },
+            { type: "text", text: "the visible answer" },
+          ],
+        },
+      ]),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -309,7 +382,7 @@ describe("OpenCodeRuntime", () => {
 
   it("cancels a run and interrupts the session", async () => {
     announceServer(proc);
-    const { fn: fetchMock, calls } = makeFetch(happyHandler([]));
+    const { fn: fetchMock, calls } = makeFetch(hangingHandler());
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -327,7 +400,7 @@ describe("OpenCodeRuntime", () => {
 
   it("marks a run as timed out", async () => {
     announceServer(proc);
-    const { fn: fetchMock } = makeFetch(happyHandler([]));
+    const { fn: fetchMock } = makeFetch(hangingHandler());
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
@@ -381,6 +454,7 @@ describe("OpenCodeRuntime", () => {
     expect(runtime.capabilities).toEqual({
       streaming: true,
       resumableSessions: true,
+      structuredForms: true,
       cancellation: true,
     });
     runtime.close();
@@ -388,25 +462,15 @@ describe("OpenCodeRuntime", () => {
 
   it("shares a single server across concurrent starts", async () => {
     announceServer(proc);
-    // Each run snapshots before prompting and polls only its own fresh
-    // messages, so every poll GET must produce a brand-new message id.
-    let counter = 0;
-    const { fn: fetchMock } = makeFetch((method, path) => {
-      if (method === "GET" && path.endsWith("/message")) {
-        const seq = ++counter;
-        return jsonResponse([{ id: `m-${seq}`, type: "idle", outcome: "succeeded" }]);
-      }
-      if (method === "POST" && path === "/api/session") return jsonResponse({ id: "sess-1" });
-      if (method === "POST" && path.endsWith("/prompt")) return noContent();
-      if (method === "POST" && path.endsWith("/interrupt")) return noContent();
-      return jsonResponse({ error: "not found" }, 404);
-    });
+    const { fn: fetchMock } = makeFetch(
+      happyHandler([{ id: "m", type: "assistant", content: [{ text: "ok" }] }]),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const runtime = new OpenCodeRuntime();
     const [first, second] = await Promise.all([start(runtime), start(runtime)]);
-    expect(first.sessionId).toBe("sess-1");
-    expect(second.sessionId).toBe("sess-1");
+    expect(first.sessionId).toBeTruthy();
+    expect(second.sessionId).toBeTruthy();
     expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
 
     await drain(runtime, first);
@@ -434,17 +498,45 @@ describe("OpenCodeRuntime", () => {
     await expect(start(runtime)).rejects.toMatchObject({ _tag: "RuntimeError" });
   });
 
-  it("marks the run failed when polling throws", async () => {
+  it("marks the run failed when execution fails", async () => {
     announceServer(proc);
-    let prompted = false;
+    const base = hangingHandler();
+    const enc = new TextEncoder();
+    const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = [];
     const { fn: fetchMock } = makeFetch((method, path) => {
+      if (method === "GET" && path === "/api/event") {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controllers.push(controller);
+            controller.enqueue(
+              enc.encode(`data: ${JSON.stringify({ type: "server.connected", data: {} })}\n\n`),
+            );
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
       if (method === "POST" && path.endsWith("/prompt")) {
-        prompted = true;
+        queueMicrotask(() => {
+          const frame = enc.encode(
+            `data: ${JSON.stringify({
+              type: "session.execution.failed",
+              data: { sessionID: "sess-1" },
+            })}\n\n`,
+          );
+          for (const c of controllers) {
+            try {
+              c.enqueue(frame);
+            } catch {
+              /* closed */
+            }
+          }
+        });
         return noContent();
       }
-      // Only poll-time failures throw — the pre-prompt snapshot must succeed.
-      if (method === "GET" && path.endsWith("/message") && prompted) throw new Error("poll boom");
-      return happyHandler([])(method, path);
+      return base(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -459,21 +551,12 @@ describe("OpenCodeRuntime", () => {
 
   it("unwraps wrapped { data } responses", async () => {
     announceServer(proc);
-    let prompted = false;
+    const base = happyHandler([{ id: "m-new", type: "assistant", content: [{ text: "ok" }] }]);
     const { fn: fetchMock } = makeFetch((method, path) => {
       if (method === "POST" && path === "/api/session") {
         return jsonResponse({ data: { id: "wrapped" } });
       }
-      if (method === "POST" && path.endsWith("/prompt")) {
-        prompted = true;
-        return noContent();
-      }
-      if (method === "GET" && path.endsWith("/message")) {
-        return jsonResponse(
-          prompted ? { data: [{ id: "m-new", type: "idle", outcome: "succeeded" }] } : { data: [] },
-        );
-      }
-      return happyHandler([])(method, path);
+      return base(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -501,7 +584,7 @@ describe("OpenCodeRuntime", () => {
     announceServer(proc);
     const { fn: fetchMock } = makeFetch((method, path) => {
       if (method === "POST" && path.includes("/interrupt")) throw new Error("interrupt boom");
-      return happyHandler([])(method, path);
+      return hangingHandler()(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -516,7 +599,7 @@ describe("OpenCodeRuntime", () => {
     announceServer(proc);
     const { fn: fetchMock } = makeFetch((method, path) => {
       if (method === "POST" && path.includes("/interrupt")) throw new Error("interrupt boom");
-      return happyHandler([])(method, path);
+      return hangingHandler()(method, path);
     });
     vi.stubGlobal("fetch", fetchMock);
 

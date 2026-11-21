@@ -460,6 +460,95 @@ body,
   border-radius: var(--radius-dot);
 }
 
+/* -------------------------------------------------------------- user input */
+
+.user-input-card {
+  flex: none;
+  margin: 0 44px 0.75rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  background: var(--surface);
+}
+
+.user-input-title {
+  margin-bottom: 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.user-input-field + .user-input-field {
+  margin-top: 0.9rem;
+}
+
+.user-input-question {
+  margin-bottom: 0.35rem;
+  font-weight: 500;
+}
+
+.user-input-description {
+  margin-bottom: 0.45rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.user-input-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.user-input-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.user-input-option.selected {
+  border-color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.user-input-option-desc {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.user-input-custom {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.user-input-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.composer-blocked {
+  opacity: 0.55;
+}
+
+.composer textarea:disabled,
+.composer .icon-send:disabled {
+  cursor: not-allowed;
+}
+
 /* -------------------------------------------------------------- composer */
 
 .composer {

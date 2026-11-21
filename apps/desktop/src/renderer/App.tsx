@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type BotAvatar } from "@bebots/domain";
+import { type BotAvatar, isDesktopRenderableForm, asFormId } from "@bebots/domain";
+import type { Form } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
@@ -27,8 +28,16 @@ import { ToastStack, type ToastItem } from "./components/Toast";
 import { BotEditor } from "./components/BotEditor";
 import { MessageThread } from "./components/MessageThread";
 import { Composer } from "./components/Composer";
+import { UserInputCard } from "./components/UserInputCard";
 import { useMentions } from "./hooks/useMentions";
 import "./styles.css";
+
+interface PendingUserInput {
+  readonly runId: string;
+  readonly form: Form;
+  readonly conversationId: string;
+  readonly afterCreatedAt: number;
+}
 
 declare global {
   interface Window {
@@ -105,6 +114,8 @@ export function App() {
   const [scheduleMinutes, setScheduleMinutes] = useState("60");
   // Chat surface state: reply-run indicator, notices.
   const [pendingReply, setPendingReply] = useState(false);
+  const [pendingUserInput, setPendingUserInput] = useState<PendingUserInput | null>(null);
+  const [userInputBusy, setUserInputBusy] = useState(false);
   const [threadNotice, setThreadNotice] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -195,56 +206,79 @@ export function App() {
     setActiveConversationId(id);
     setMessages([]);
     setPendingReply(false);
+    setPendingUserInput(null);
     setThreadNotice(null);
     setView("chat");
     if (contextBotId !== undefined) setSelectedId(contextBotId);
     void refreshMessages(id);
   };
 
-  /**
-   * A human message triggers a reply run for a participating bot (full reply
-   * loop, PLAN §12 M3). The bot's answer lands asynchronously when its run
-   * completes, so poll the thread briefly after sending and drive the typing
-   * indicator until it arrives — or surface a notice if it never does.
-   */
-  const pollForReply = (
+  const watchRunForInput = async (
+    runId: string,
     conversationId: string,
     afterCreatedAt: number,
     endpointAt: ApiEndpoint,
   ) => {
-    let attempts = 0;
-    const tick = () => {
-      // The user may have switched conversations while the poll was pending;
-      // stop clobbering the thread once it is no longer the visible one.
+    for (let i = 0; i < 240; i++) {
       if (activeIdRef.current !== conversationId) return;
-      attempts += 1;
-      void apiRequest(
-        endpointAt,
-        `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
-        (c) => c.conversations.listMessages({ params: { id: conversationId } }),
-      )
-        .then((list) => {
-          setMessages(list);
-          const hasReply = list.some((m) => m.senderType === "bot" && m.createdAt > afterCreatedAt);
-          if (hasReply) {
-            setPendingReply(false);
-            setThreadNotice(null);
-            return;
-          }
-          if (attempts >= 40) {
-            setPendingReply(false);
-            setThreadNotice(
-              "No reply yet — the run may still be in flight or failed. Check run history.",
+      try {
+        const run = (await apiRequest(
+          endpointAt,
+          `/api/v1/runs/${encodeURIComponent(runId)}`,
+          (c) => c.runs.getRun({ params: { id: runId } }),
+        )) as { status?: string } | null;
+        if (!run) return;
+        if (run.status === "awaiting_input") {
+          const form = await apiRequest(
+            endpointAt,
+            `/api/v1/runs/${encodeURIComponent(runId)}/input`,
+            (c) => c.runs.getRunInput({ params: { id: runId } }),
+          );
+          const domainForm: Form = {
+            id: asFormId(form.id),
+            sessionId: form.sessionId,
+            title: form.title,
+            fields: form.fields.map((f) => ({
+              key: f.key,
+              type: f.type as Form["fields"][number]["type"],
+              ...(f.title !== undefined ? { title: f.title } : {}),
+              ...(f.description !== undefined ? { description: f.description } : {}),
+              ...(f.custom !== undefined ? { custom: f.custom } : {}),
+              ...(f.options !== undefined ? { options: f.options } : {}),
+              ...(f.url !== undefined ? { url: f.url } : {}),
+            })) as Form["fields"],
+          };
+          if (!isDesktopRenderableForm(domainForm)) {
+            await apiRequest(
+              endpointAt,
+              `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
+              (c) => c.runs.dismissRunInput({ params: { id: runId } }),
             );
+            setPendingReply(false);
+            setThreadNotice("This question uses a form shape the desktop app can't show yet.");
             return;
           }
-          window.setTimeout(tick, 1_500);
-        })
-        .catch(() => {
           setPendingReply(false);
-        });
-    };
-    window.setTimeout(tick, 1_500);
+          setPendingUserInput({ runId, form: domainForm, conversationId, afterCreatedAt });
+          return;
+        }
+        if (
+          run.status === "succeeded" ||
+          run.status === "failed" ||
+          run.status === "cancelled" ||
+          run.status === "timed_out"
+        ) {
+          setPendingReply(false);
+          await refreshMessages(conversationId);
+          return;
+        }
+      } catch {
+        /* keep polling */
+      }
+      await new Promise((r) => window.setTimeout(r, 500));
+    }
+    setPendingReply(false);
+    setThreadNotice("No reply yet — the run may still be in flight or failed. Check run history.");
   };
 
   const createConversationWith = async (botId: string | null) => {
@@ -297,7 +331,7 @@ export function App() {
       await refreshMessages(conversationId);
       if (reply.runId !== null) {
         setPendingReply(true);
-        pollForReply(conversationId, reply.message.createdAt, endpoint);
+        void watchRunForInput(reply.runId, conversationId, reply.message.createdAt, endpoint);
       } else {
         setPendingReply(false);
       }
@@ -885,12 +919,56 @@ export function App() {
                 messages={messages}
                 hasActiveConversation={activeConversation !== null}
                 bots={bots}
-                pendingReply={pendingReply}
+                pendingReply={pendingReply && pendingUserInput === null}
                 typingLabel={typingLabel}
                 threadNotice={threadNotice}
                 emptyHintBotName={headerBot?.name ?? "this bot"}
                 endRef={threadEndRef}
               />
+              {pendingUserInput !== null && (
+                <UserInputCard
+                  form={pendingUserInput.form}
+                  busy={userInputBusy}
+                  onDismiss={() => {
+                    if (!endpoint || userInputBusy) return;
+                    const { runId, conversationId } = pendingUserInput;
+                    setUserInputBusy(true);
+                    void apiRequest(
+                      endpoint,
+                      `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
+                      (c) => c.runs.dismissRunInput({ params: { id: runId } }),
+                    )
+                      .then(() => {
+                        setPendingUserInput(null);
+                        setPendingReply(false);
+                        return refreshMessages(conversationId);
+                      })
+                      .catch((e) => pushError(String(e)))
+                      .finally(() => setUserInputBusy(false));
+                  }}
+                  onSubmit={(answers) => {
+                    if (!endpoint || userInputBusy) return;
+                    const { runId, conversationId, afterCreatedAt } = pendingUserInput;
+                    setUserInputBusy(true);
+                    void apiRequest(
+                      endpoint,
+                      `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`,
+                      (c) =>
+                        c.runs.replyRunInput({
+                          params: { id: runId },
+                          payload: { answers },
+                        }),
+                    )
+                      .then(() => {
+                        setPendingUserInput(null);
+                        setPendingReply(true);
+                        return watchRunForInput(runId, conversationId, afterCreatedAt, endpoint);
+                      })
+                      .catch((e) => pushError(String(e)))
+                      .finally(() => setUserInputBusy(false));
+                  }}
+                />
+              )}
               <Composer
                 draft={draft}
                 placeholder={composerPlaceholder}
@@ -903,6 +981,7 @@ export function App() {
                 onKeyDown={mentions.handleKeyDown}
                 onNewSession={() => void handleNewConversation()}
                 onSubmit={() => void handleSendMessage()}
+                disabled={pendingUserInput !== null}
               />
             </>
           )}

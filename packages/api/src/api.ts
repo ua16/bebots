@@ -52,12 +52,22 @@ const RunResponse = Schema.Struct({
   botId: Schema.String,
   triggerType: Schema.Literals(["manual", "schedule", "message", "task", "api"]),
   prompt: Schema.String,
-  status: Schema.Literals(["queued", "running", "succeeded", "failed", "cancelled", "timed_out"]),
+  status: Schema.Literals([
+    "queued",
+    "running",
+    "awaiting_input",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed_out",
+  ]),
   sessionId: Schema.optional(Schema.String),
   conversationId: Schema.optional(Schema.String),
   conversationSessionId: Schema.optional(Schema.String),
   taskId: Schema.optional(Schema.String),
   timeoutMs: Schema.Number,
+  pendingFormId: Schema.optional(Schema.String),
+  inputDeadlineAt: Schema.optional(Schema.Number),
   startedAt: Schema.optional(Schema.Number),
   endedAt: Schema.optional(Schema.Number),
   exitCode: Schema.optional(Schema.Number),
@@ -65,6 +75,35 @@ const RunResponse = Schema.Struct({
   error: Schema.optional(Schema.String),
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
+});
+
+const FormOptionResponse = Schema.Struct({
+  value: Schema.String,
+  label: Schema.String,
+  description: Schema.optional(Schema.String),
+});
+
+const FormFieldResponse = Schema.Struct({
+  key: Schema.String,
+  type: Schema.String,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+  hidden: Schema.optional(Schema.Boolean),
+  custom: Schema.optional(Schema.Boolean),
+  options: Schema.optional(Schema.Array(FormOptionResponse)),
+  url: Schema.optional(Schema.String),
+});
+
+const FormResponse = Schema.Struct({
+  id: Schema.String,
+  sessionId: Schema.String,
+  title: Schema.String,
+  fields: Schema.Array(FormFieldResponse),
+});
+
+const InputReplyBody = Schema.Struct({
+  answers: Schema.Record(Schema.String, Schema.Unknown),
 });
 
 const ModelInfoResponse = Schema.Struct({
@@ -289,6 +328,22 @@ const runs = HttpApiGroup.make("runs").add(
     error: ApiError,
   }),
   HttpApiEndpoint.post("cancelRun", "/api/v1/runs/:id/cancel", {
+    params: IdParams,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("getRunInput", "/api/v1/runs/:id/input", {
+    params: IdParams,
+    success: FormResponse,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("replyRunInput", "/api/v1/runs/:id/input/reply", {
+    params: IdParams,
+    payload: InputReplyBody,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("dismissRunInput", "/api/v1/runs/:id/input/dismiss", {
     params: IdParams,
     success: U,
     error: ApiError,

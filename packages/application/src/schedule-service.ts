@@ -384,7 +384,13 @@ export class ScheduleService implements ScheduleResultRecorder {
           continue;
         }
         const ran = run.value;
-        if (ran.status === "queued" || ran.status === "running") continue;
+        if (
+          ran.status === "queued" ||
+          ran.status === "running" ||
+          ran.status === "awaiting_input"
+        ) {
+          continue;
+        }
         yield* self.resolveOccurrenceFromRun(occurrence, ran.status);
       }
       // `pending` occurrences (enqueue failed earlier) are retried here even
