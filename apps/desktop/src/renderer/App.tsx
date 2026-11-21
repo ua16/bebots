@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type BotAvatar, isDesktopRenderableForm, asFormId } from "@bebots/domain";
+import { type BotAvatar, formFromWire, isDesktopRenderableForm } from "@bebots/domain";
 import type { Form } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
@@ -229,20 +229,7 @@ export function App() {
         `/api/v1/runs/${encodeURIComponent(runId)}/input`,
         (c) => c.runs.getRunInput({ params: { id: runId } }),
       );
-      const domainForm: Form = {
-        id: asFormId(form.id),
-        sessionId: form.sessionId,
-        title: form.title,
-        fields: form.fields.map((f) => ({
-          key: f.key,
-          type: f.type as Form["fields"][number]["type"],
-          ...(f.title !== undefined ? { title: f.title } : {}),
-          ...(f.description !== undefined ? { description: f.description } : {}),
-          ...(f.custom !== undefined ? { custom: f.custom } : {}),
-          ...(f.options !== undefined ? { options: f.options } : {}),
-          ...(f.url !== undefined ? { url: f.url } : {}),
-        })) as Form["fields"],
-      };
+      const domainForm = formFromWire(form);
       if (!isDesktopRenderableForm(domainForm)) {
         await apiRequest(
           endpointAt,

@@ -83,9 +83,18 @@ const FormOptionResponse = Schema.Struct({
   description: Schema.optional(Schema.String),
 });
 
+const FormFieldType = Schema.Literals([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "multiselect",
+  "external",
+]);
+
 const FormFieldResponse = Schema.Struct({
   key: Schema.String,
-  type: Schema.String,
+  type: FormFieldType,
   title: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   required: Schema.optional(Schema.Boolean),
@@ -102,8 +111,15 @@ const FormResponse = Schema.Struct({
   fields: Schema.Array(FormFieldResponse),
 });
 
+const FormAnswerValue = Schema.Union([
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Array(Schema.String),
+]);
+
 const InputReplyBody = Schema.Struct({
-  answers: Schema.Record(Schema.String, Schema.Unknown),
+  answers: Schema.Record(Schema.String, FormAnswerValue),
 });
 
 const ModelInfoResponse = Schema.Struct({

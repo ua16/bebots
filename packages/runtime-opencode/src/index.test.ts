@@ -253,6 +253,10 @@ describe("OpenCodeRuntime", () => {
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("hello world");
 
+    // Prior-message snapshot + post-completion summary only — no completion poll loop.
+    const messageGets = calls.filter((c) => c.method === "GET" && c.path.endsWith("/message"));
+    expect(messageGets).toHaveLength(2);
+
     const events = await collectEvents(runtime.streamEvents(handle));
     expect(events.map((e) => e._tag)).toEqual(["started", "completed"]);
   });
@@ -412,9 +416,7 @@ describe("OpenCodeRuntime", () => {
     expect(result.exitCode).toBe(130);
     expect(result.summary).toBe("cancelled");
     expect(
-      calls.some(
-        (c) => c.method === "DELETE" && c.path === "/api/session/sess-1/form/frm_1",
-      ),
+      calls.some((c) => c.method === "DELETE" && c.path === "/api/session/sess-1/form/frm_1"),
     ).toBe(true);
     expect(calls.some((c) => c.path.endsWith("/interrupt?resume=false"))).toBe(true);
   });

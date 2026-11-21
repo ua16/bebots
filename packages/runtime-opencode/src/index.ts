@@ -475,36 +475,6 @@ export class OpenCodeRuntime implements AgentRuntime {
     }
   }
 
-  /** Backup when `session.execution.*` was missed on the event stream. */
-  private async reconcileCompletion(server: ServerInfo, state: RunState): Promise<void> {
-    if (state.done || state.cancelled || state.awaitingFormId !== null || !state.sessionId) return;
-    try {
-      const msgs = await this.request<unknown[]>(
-        server,
-        "GET",
-        `/api/session/${state.sessionId}/message`,
-      );
-      const list = Array.isArray(msgs) ? msgs : ((msgs as { data?: unknown[] })?.data ?? []);
-      const fresh = (list as any[]).filter((m: any) => {
-        if (m?.id === undefined || m?.id === null) return true;
-        return !state.priorMessageIds.has(String(m.id));
-      });
-      const idle = fresh.find((m: any) => m?.type === "idle");
-      const completedAssistant = fresh.find(
-        (m: any) => m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
-      );
-      if (idle || completedAssistant) {
-        await this.finishRun(
-          server,
-          state,
-          idle !== undefined && idle.outcome !== "succeeded" ? "failed" : "succeeded",
-        );
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
   private handleNativeEvent(
     server: ServerInfo,
     state: RunState,
@@ -649,8 +619,8 @@ export class OpenCodeRuntime implements AgentRuntime {
           text: request.prompt,
         });
 
-        // Watch timeout, reconcile pending forms (SSE can miss frames in some
-        // hosts), and fall back to message-based completion if events stall.
+        // Watch timeout; rare form.list backup when form.created SSE was
+        // missed. Completion is driven only by session.execution.* SSE.
         void (async () => {
           try {
             let ticks = 0;
@@ -660,11 +630,8 @@ export class OpenCodeRuntime implements AgentRuntime {
                 continue;
               }
               ticks += 1;
-              if (ticks % 2 === 0) {
+              if (ticks % 40 === 0) {
                 await self.reconcilePendingForm(server, state);
-              }
-              if (ticks % 4 === 0) {
-                await self.reconcileCompletion(server, state);
               }
               const left = self.remainingMs(state);
               if (left <= 0) {

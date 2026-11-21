@@ -104,6 +104,86 @@ export function isDesktopRenderableForm(form: Form): boolean {
   return form.fields.length > 0;
 }
 
+export interface FormFieldWire {
+  readonly key: string;
+  readonly type: FormField["type"];
+  readonly title?: string | undefined;
+  readonly description?: string | undefined;
+  readonly required?: boolean | undefined;
+  readonly hidden?: boolean | undefined;
+  readonly custom?: boolean | undefined;
+  readonly options?:
+    | readonly {
+        readonly value: string;
+        readonly label: string;
+        readonly description?: string | undefined;
+      }[]
+    | undefined;
+  readonly url?: string | undefined;
+}
+
+export interface FormWire {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly title: string;
+  readonly fields: readonly FormFieldWire[];
+}
+
+function optionsFromWire(options: FormFieldWire["options"]): readonly FormOption[] | undefined {
+  if (options === undefined) return undefined;
+  return options.map((option) => ({
+    value: option.value,
+    label: option.label,
+    ...(option.description !== undefined ? { description: option.description } : {}),
+  }));
+}
+
+function fieldFromWire(field: FormFieldWire): FormField {
+  const base = {
+    key: field.key,
+    ...(field.title !== undefined ? { title: field.title } : {}),
+    ...(field.description !== undefined ? { description: field.description } : {}),
+    ...(field.required !== undefined ? { required: field.required } : {}),
+    ...(field.hidden !== undefined ? { hidden: field.hidden } : {}),
+  };
+  const options = optionsFromWire(field.options);
+  switch (field.type) {
+    case "string":
+      return {
+        ...base,
+        type: "string",
+        ...(field.custom !== undefined ? { custom: field.custom } : {}),
+        ...(options !== undefined ? { options } : {}),
+      };
+    case "multiselect":
+      return {
+        ...base,
+        type: "multiselect",
+        options: options ?? [],
+        ...(field.custom !== undefined ? { custom: field.custom } : {}),
+      };
+    case "external":
+      return {
+        ...base,
+        type: "external",
+        url: field.url ?? "",
+      };
+    case "number":
+    case "integer":
+    case "boolean":
+      return { ...base, type: field.type };
+  }
+}
+
+export function formFromWire(raw: FormWire): Form {
+  return {
+    id: asFormId(raw.id),
+    sessionId: raw.sessionId,
+    title: raw.title,
+    fields: raw.fields.map(fieldFromWire),
+  };
+}
+
 export interface PendingRunInput {
   readonly formId: FormId;
   readonly inputDeadlineAt: number;
