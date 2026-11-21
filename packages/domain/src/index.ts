@@ -1,5 +1,8 @@
+export * from "./avatar.js";
 export * from "./schedule.js";
 export * from "./schemas.js";
+
+import type { BotAvatar } from "./avatar.js";
 
 export type BotId = string & { readonly __brand: "BotId" };
 
@@ -89,6 +92,7 @@ export interface Bot {
   readonly status: BotStatus;
   /** Per-bot model override; `null`/absent means "use the app default, if any". */
   readonly model?: ModelRef | null;
+  readonly avatar: BotAvatar;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

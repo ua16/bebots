@@ -6,7 +6,7 @@ interface ThreadHeaderProps {
   readonly headerBot: BebotsBot | null;
   readonly headerTitle: string;
   readonly threadBotIds: readonly string[];
-  readonly extraBotIds: readonly string[];
+  readonly extraBots: readonly BebotsBot[];
   readonly participantsLabel: string;
   readonly settingsOpen: boolean;
   readonly onToggleSettings: () => void;
@@ -17,7 +17,7 @@ export function ThreadHeader({
   headerBot,
   headerTitle,
   threadBotIds,
-  extraBotIds,
+  extraBots,
   participantsLabel,
   settingsOpen,
   onToggleSettings,
@@ -26,17 +26,17 @@ export function ThreadHeader({
     <header className="chat-thread-head">
       <div className="thread-head-identity">
         <div className="thread-head-name-row">
-          {headerBot !== null ? <BotAvatar id={headerBot.id} size={47} /> : null}
+          {headerBot !== null ? <BotAvatar avatar={headerBot.avatar} size={47} /> : null}
           <h2>{headerTitle}</h2>
         </div>
         <p className="muted thread-head-participants">
           {threadBotIds.length > 1 ? participantsLabel : "\u00a0"}
         </p>
       </div>
-      {extraBotIds.length > 0 && (
+      {extraBots.length > 0 && (
         <div className="thread-extra-avatars" aria-hidden>
-          {extraBotIds.map((id) => (
-            <BotAvatar key={id} id={id} size={24} />
+          {extraBots.map((bot) => (
+            <BotAvatar key={bot.id} avatar={bot.avatar} size={24} />
           ))}
         </div>
       )}

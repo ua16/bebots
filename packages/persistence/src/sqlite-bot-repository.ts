@@ -1,6 +1,13 @@
 import { Effect } from "effect";
 import type { Bot, BotId } from "@bebots/domain";
-import { asBotId, parseModelRef, serializeModelRef } from "@bebots/domain";
+import {
+  asBotId,
+  avatarFromBotId,
+  parseBotAvatar,
+  parseModelRef,
+  serializeBotAvatar,
+  serializeModelRef,
+} from "@bebots/domain";
 import type { BotRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
 import type { SqliteDatabase } from "./database.js";
@@ -13,6 +20,8 @@ interface BotRow {
   status: string;
   /** JSON-encoded ModelRef, or '' when unset. */
   model: string;
+  /** JSON-encoded BotAvatar, or '' when unset (pre-backfill / corrupt). */
+  avatar: string;
   created_at: number;
   updated_at: number;
 }
@@ -25,6 +34,7 @@ function rowToBot(row: BotRow): Bot {
     persona: row.persona,
     status: row.status as Bot["status"],
     model: parseModelRef(row.model),
+    avatar: parseBotAvatar(row.avatar) ?? avatarFromBotId(row.id),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -42,8 +52,8 @@ export class SqliteBotRepository implements BotRepository {
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO bots (id, name, description, persona, status, model, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO bots (id, name, description, persona, status, model, avatar, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           bot.id,
           bot.name,
@@ -51,6 +61,7 @@ export class SqliteBotRepository implements BotRepository {
           bot.persona,
           bot.status,
           serializeModelRef(bot.model),
+          serializeBotAvatar(bot.avatar),
           bot.createdAt,
           bot.updatedAt,
         );
@@ -95,7 +106,7 @@ export class SqliteBotRepository implements BotRepository {
           const info = db
             .prepare(
               `UPDATE bots
-               SET name = ?, description = ?, persona = ?, status = ?, model = ?, updated_at = ?
+               SET name = ?, description = ?, persona = ?, status = ?, model = ?, avatar = ?, updated_at = ?
                WHERE id = ?`,
             )
             .run(
@@ -104,6 +115,7 @@ export class SqliteBotRepository implements BotRepository {
               bot.persona,
               bot.status,
               serializeModelRef(bot.model),
+              serializeBotAvatar(bot.avatar),
               bot.updatedAt,
               bot.id,
             );

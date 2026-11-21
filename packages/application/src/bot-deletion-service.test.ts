@@ -10,6 +10,7 @@ import {
   asRunId,
   asScheduleId,
   asScheduleOccurrenceId,
+  avatarFromBotId,
 } from "@bebots/domain";
 import type {
   ActivityEvent,
@@ -536,6 +537,7 @@ function seed(stores: Stores, scheduleHarness: ReturnType<typeof makeScheduleRep
     description: "",
     persona: "",
     status: "active",
+    avatar: avatarFromBotId(id),
     createdAt: 1,
     updatedAt: 1,
   });

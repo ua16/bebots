@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
-import type { Bot, BotId, BotStatus, ModelRef } from "@bebots/domain";
-import { asBotId, ModelRefPatchSchema } from "@bebots/domain";
+import type { Bot, BotAvatar, BotId, BotStatus, ModelRef } from "@bebots/domain";
+import { asBotId, avatarFromBotId, ModelRefPatchSchema, validateBotAvatar } from "@bebots/domain";
 import type { BotRepository, BotWorkspace, Clock, IdGenerator } from "./repositories.js";
 import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
 
@@ -10,6 +10,7 @@ export interface CreateBotInput {
   readonly persona?: string;
   /** Per-bot model override. */
   readonly model?: ModelRef | null;
+  readonly avatar?: BotAvatar;
 }
 
 export interface UpdateBotInput {
@@ -19,6 +20,7 @@ export interface UpdateBotInput {
   readonly status?: BotStatus;
   /** Per-bot model override; `null` clears it (fall back to app default). */
   readonly model?: ModelRef | null;
+  readonly avatar?: BotAvatar;
 }
 
 function validateName(name: string): void {
@@ -28,6 +30,14 @@ function validateName(name: string): void {
   if (name.length > 120) {
     throw new ValidationError("name", "Bot name is too long");
   }
+}
+
+function decodeAvatar(value: unknown): BotAvatar {
+  const validated = validateBotAvatar(value);
+  if (validated.valid === false) {
+    throw new ValidationError(validated.field, validated.message);
+  }
+  return validated.value;
 }
 
 export interface BotServiceDeps {
@@ -69,6 +79,14 @@ export class BotService {
       } catch {
         return yield* Effect.fail(new ValidationError("model", "Invalid model reference"));
       }
+      let avatar: BotAvatar | undefined;
+      if (input.avatar !== undefined) {
+        try {
+          avatar = decodeAvatar(input.avatar);
+        } catch (e) {
+          return yield* Effect.fail(e as ValidationError);
+        }
+      }
       let id: BotId;
       try {
         id = asBotId(ids.generate());
@@ -85,6 +103,7 @@ export class BotService {
         persona,
         status: "active",
         model,
+        avatar: avatar ?? avatarFromBotId(id),
         createdAt: now,
         updatedAt: now,
       };
@@ -130,6 +149,16 @@ export class BotService {
         }
         hasModel = true;
       }
+      let decodedAvatar: BotAvatar | undefined;
+      let hasAvatar = false;
+      if (input.avatar !== undefined) {
+        try {
+          decodedAvatar = decodeAvatar(input.avatar);
+          hasAvatar = true;
+        } catch (e) {
+          return yield* Effect.fail(e as ValidationError);
+        }
+      }
       const updated: Bot = {
         ...existing,
         name: input.name !== undefined ? input.name.trim() : existing.name,
@@ -138,6 +167,7 @@ export class BotService {
         persona: input.persona !== undefined ? input.persona : existing.persona,
         status: input.status !== undefined ? input.status : existing.status,
         ...(hasModel && { model: decodedModel ?? null }),
+        ...(hasAvatar && decodedAvatar !== undefined && { avatar: decodedAvatar }),
         updatedAt: clock.now(),
       };
       yield* repo.update(updated);

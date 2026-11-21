@@ -1,4 +1,4 @@
-import type { BebotsBot } from "../../shared/preload-api";
+import type { BebotsBot, BebotsBotAvatar } from "../../shared/preload-api";
 import type { ApiConversation } from "./api-types";
 
 /**
@@ -9,6 +9,8 @@ import type { ApiConversation } from "./api-types";
 export interface SessionGroup {
   readonly botId: string;
   readonly name: string;
+  /** Null for the unassigned (human-only) group. */
+  readonly avatar: BebotsBotAvatar | null;
   readonly sessions: readonly ApiConversation[];
 }
 
@@ -39,6 +41,7 @@ export function groupSidebarSessions(
   const groups: SessionGroup[] = bots.map((bot) => ({
     botId: bot.id,
     name: bot.name,
+    avatar: bot.avatar,
     sessions: byBot.get(bot.id) ?? [],
   }));
   const newestAt = (g: SessionGroup) => g.sessions[0]?.updatedAt ?? 0;
@@ -50,6 +53,7 @@ export function groupSidebarSessions(
     groups.push({
       botId: UNASSIGNED_GROUP_ID,
       name: HUMAN_ONLY_GROUP_NAME,
+      avatar: null,
       sessions: orphans,
     });
   }

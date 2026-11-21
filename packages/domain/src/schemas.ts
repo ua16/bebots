@@ -8,6 +8,17 @@ export const ModelRefSchema = Schema.Struct({
 
 export const ModelRefPatchSchema = Schema.Union([Schema.Undefined, Schema.Null, ModelRefSchema]);
 
+export const BotAvatarSchema = Schema.Struct({
+  face: Schema.Literals(["face-0", "face-1", "face-2", "face-3"]),
+  color: Schema.Number.check(
+    Schema.makeFilter(
+      (n: number) => Number.isFinite(n) && Number.isInteger(n) && n >= 0 && n <= 9,
+      { message: "Avatar color must be an integer 0–9" },
+    ),
+  ),
+  shape: Schema.Literals(["circle", "squircle", "rounded-star"]),
+});
+
 export const BotIdSchema = Schema.String.pipe(Schema.brand("BotId"));
 export const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
 export const TaskIdSchema = Schema.String.pipe(Schema.brand("TaskId"));

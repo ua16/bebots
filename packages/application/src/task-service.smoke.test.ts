@@ -6,6 +6,7 @@ import { RunService } from "./run-service.js";
 import type { AgentRuntime, RunHandle, RunRequest, RunResult, RuntimeEvent } from "./runtime.js";
 import { Stream } from "effect";
 import type { Bot, BotId, Run, Task } from "@bebots/domain";
+import { avatarFromBotId } from "@bebots/domain";
 
 function makeTaskRepo(): TaskRepository {
   const store = new Map<string, Task>();
@@ -53,6 +54,7 @@ function makeBotRepo(): BotRepository {
     description: "",
     persona: "",
     status: "active",
+    avatar: avatarFromBotId(String(id)),
     createdAt: 1,
     updatedAt: 1,
   });

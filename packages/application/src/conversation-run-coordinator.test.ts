@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Cause, Effect, Exit, Stream } from "effect";
 import type { Bot, Conversation, ConversationSession, Message, Run } from "@bebots/domain";
-import { asBotId, asConversationId } from "@bebots/domain";
+import { asBotId, asConversationId, avatarFromBotId } from "@bebots/domain";
 import { BOT_LINK_PIN_TTL_MS, ConversationRunCoordinator } from "./conversation-run-coordinator.js";
 import { ConversationService, ConversationSessionService } from "./conversation-service.js";
 import { NotFoundError } from "./errors.js";
@@ -128,6 +128,7 @@ const bot: Bot = {
   description: "",
   persona: "",
   status: "active",
+  avatar: avatarFromBotId("bot-1"),
   createdAt: 1,
   updatedAt: 1,
 };
@@ -480,6 +481,7 @@ describe("bot-to-bot send_message continuity (bot-link pins)", () => {
       description: "",
       persona: "",
       status: "active",
+      avatar: avatarFromBotId(id),
       createdAt: 1,
       updatedAt: 1,
     };

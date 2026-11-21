@@ -6,6 +6,7 @@ import {
   asMessageId,
   asScheduleId,
   asScheduleOccurrenceId,
+  avatarFromBotId,
 } from "@bebots/domain";
 import type { Bot, Conversation, Message, Run, Schedule, ScheduleOccurrence } from "@bebots/domain";
 import {
@@ -36,6 +37,7 @@ function makeBotRepo(): BotRepository {
     description: "",
     persona: "",
     status: "active",
+    avatar: avatarFromBotId(String(id)),
     createdAt: 1,
     updatedAt: 1,
   });

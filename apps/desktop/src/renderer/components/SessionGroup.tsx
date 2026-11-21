@@ -43,7 +43,7 @@ export function SessionGroup({
           onBotContextMenu(e, group.botId);
         }}
       >
-        <BotAvatar id={group.botId === UNASSIGNED_GROUP_ID ? null : group.botId} size={39} />
+        <BotAvatar avatar={group.avatar} size={39} />
         <span className="bot-row-name">{group.name}</span>
         {expanded ? (
           <ChevronUp size={19} strokeWidth={2.4} aria-hidden />

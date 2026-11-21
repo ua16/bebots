@@ -1,9 +1,11 @@
+import { avatarForMigration, serializeBotAvatar } from "@bebots/domain";
 import type { SqliteDatabase } from "./database.js";
 
 interface Migration {
   readonly version: number;
   readonly name: string;
-  readonly sql: string;
+  readonly sql?: string;
+  readonly run?: (db: SqliteDatabase) => void;
 }
 
 const MIGRATIONS: readonly Migration[] = [
@@ -262,6 +264,18 @@ const MIGRATIONS: readonly Migration[] = [
         ON schedule_occurrences (run_id);
     `,
   },
+  {
+    version: 17,
+    name: "bots_avatar",
+    sql: `ALTER TABLE bots ADD COLUMN avatar TEXT NOT NULL DEFAULT '';`,
+    run: (db) => {
+      const rows = db.prepare("SELECT id FROM bots").all() as unknown as { id: string }[];
+      const update = db.prepare("UPDATE bots SET avatar = ? WHERE id = ?");
+      for (const row of rows) {
+        update.run(serializeBotAvatar(avatarForMigration(row.id)), row.id);
+      }
+    },
+  },
 ];
 
 export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()): void {
@@ -282,7 +296,8 @@ export function migrate(db: SqliteDatabase, now: () => number = () => Date.now()
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue;
-    db.exec(migration.sql);
+    if (migration.sql) db.exec(migration.sql);
+    migration.run?.(db);
     const insert = db.prepare(
       "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
     );

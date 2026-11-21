@@ -1,6 +1,10 @@
+import { useState } from "react";
+import type { BotAvatar } from "@bebots/domain";
 import type { BebotsBot } from "../../shared/preload-api";
 import type { ApiModel, ApiSchedule, ApiScheduleOccurrence } from "../lib/api-types";
 import type { ModelSelection } from "../lib/model-selection";
+import { AvatarEditDialog } from "./AvatarEditDialog";
+import { BotAvatar as BotAvatarView } from "./avatar";
 import { BOT_APP_DEFAULT_OPTION, ModelSelect } from "./ModelSelect";
 import { SchedulePanel } from "./SchedulePanel";
 
@@ -12,21 +16,21 @@ interface BotEditorProps {
   readonly onDescriptionChange: (value: string) => void;
   readonly persona: string;
   readonly onPersonaChange: (value: string) => void;
+  readonly avatar: BotAvatar;
+  readonly onAvatarChange: (value: BotAvatar) => void;
+  readonly onAvatarDialogClose?: () => void;
   readonly modelSelection: ModelSelection;
   readonly onModelSelect: (selection: ModelSelection) => void;
   readonly defaultModelSelection: ModelSelection;
   readonly modelGroups: ReadonlyArray<[string, readonly ApiModel[]]>;
   readonly onOpenGlobalSettings: () => void;
-  readonly onSave: () => void;
   readonly onArchive: () => void;
   readonly onCreate: () => void;
-  // Run panel
   readonly prompt: string;
   readonly onPromptChange: (value: string) => void;
   readonly onRun: () => void;
   readonly runStatus: string | null;
   readonly runResult: string | null;
-  // Schedules
   readonly schedules: readonly ApiSchedule[];
   readonly scheduleHistory: {
     readonly id: string;
@@ -44,7 +48,6 @@ interface BotEditorProps {
   readonly onScheduleMinutesChange: (value: string) => void;
 }
 
-/** Bot settings sheet: edit the selected bot, or the new-bot form. */
 export function BotEditor({
   selected,
   name,
@@ -53,12 +56,14 @@ export function BotEditor({
   onDescriptionChange,
   persona,
   onPersonaChange,
+  avatar,
+  onAvatarChange,
+  onAvatarDialogClose,
   modelSelection,
   onModelSelect,
   defaultModelSelection,
   modelGroups,
   onOpenGlobalSettings,
-  onSave,
   onArchive,
   onCreate,
   prompt,
@@ -79,6 +84,31 @@ export function BotEditor({
   scheduleMinutes,
   onScheduleMinutesChange,
 }: BotEditorProps) {
+  const [avatarDialogOpen, setAvatarDialogOpen] = useState(false);
+
+  const closeAvatarDialog = () => {
+    setAvatarDialogOpen(false);
+    onAvatarDialogClose?.();
+  };
+
+  const avatarField = (
+    <div className="settings-field avatar-field">
+      <span>Avatar</span>
+      <div className="avatar-field-row">
+        <BotAvatarView avatar={avatar} size={47} />
+        <button type="button" className="pill-button" onClick={() => setAvatarDialogOpen(true)}>
+          Edit avatar
+        </button>
+      </div>
+      <AvatarEditDialog
+        open={avatarDialogOpen}
+        value={avatar}
+        onChange={onAvatarChange}
+        onClose={closeAvatarDialog}
+      />
+    </div>
+  );
+
   const modelField = (
     <label className="settings-field">
       <span>Model</span>
@@ -90,7 +120,7 @@ export function BotEditor({
       />
     </label>
   );
-  // Both branches render the same Name/Description/Persona fields.
+
   const identityFields = (
     <>
       <label className="settings-field">
@@ -120,13 +150,11 @@ export function BotEditor({
 
       {selected ? (
         <>
+          {avatarField}
           {identityFields}
           {modelField}
 
           <div className="actions">
-            <button type="button" className="pill-button" onClick={onSave}>
-              Save
-            </button>
             <button type="button" className="pill-button" onClick={onArchive}>
               Archive
             </button>
@@ -161,6 +189,7 @@ export function BotEditor({
       ) : (
         <>
           <h2>New bot</h2>
+          {avatarField}
           {identityFields}
           {modelField}
           <div className="actions">

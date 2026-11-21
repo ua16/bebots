@@ -72,7 +72,10 @@ export function MessageThread({
             >
               {m.senderType === "bot" ? (
                 <span className="message-identity">
-                  <BotAvatar id={m.senderId} size={18} />
+                  <BotAvatar
+                    avatar={bots.find((b) => b.id === m.senderId)?.avatar ?? null}
+                    size={18}
+                  />
                   <span className="message-sender">{botName(bots, m.senderId)}</span>
                 </span>
               ) : (
