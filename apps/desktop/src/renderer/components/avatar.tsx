@@ -4,6 +4,7 @@ import {
   avatarCssColor,
   hashBotId,
   resolveBotAvatar,
+  type AvatarShapeId,
   type BotAvatar as BotAvatarModel,
 } from "@bebots/domain";
 import { AVATAR_FACE_PATHS } from "./bot-avatar-faces";
@@ -14,7 +15,7 @@ const generator = rough.generator();
 
 type RoughPath = { d: string; stroke: string; strokeWidth: number; fill?: string };
 
-function roughShapePaths(shape: string, fill: string, seed: number): readonly RoughPath[] {
+function roughShapePaths(shape: AvatarShapeId, fill: string, seed: number): readonly RoughPath[] {
   const d = shapePath(shape);
   const drawable = generator.path(d, {
     seed,

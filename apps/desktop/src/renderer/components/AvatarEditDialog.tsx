@@ -3,6 +3,7 @@ import {
   AVATAR_FACES,
   AVATAR_SHAPES,
   avatarCssColor,
+  type AvatarShapeId,
   type BotAvatar,
 } from "@bebots/domain";
 import { Dialog } from "./Dialog";
@@ -15,13 +16,12 @@ interface AvatarEditDialogProps {
   readonly onClose: () => void;
 }
 
-const SHAPE_LABELS: Record<string, string> = {
+const SHAPE_LABELS: Record<AvatarShapeId, string> = {
   circle: "Circle",
   squircle: "Squircle",
   "rounded-star": "Star",
 };
 
-/** Face / color / shape pickers. Closing the dialog commits the avatar. */
 export function AvatarEditDialog({ open, value, onChange, onClose }: AvatarEditDialogProps) {
   return (
     <Dialog open={open} title="Edit avatar" onClose={onClose}>

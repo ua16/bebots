@@ -18,7 +18,6 @@ interface BotEditorProps {
   readonly onPersonaChange: (value: string) => void;
   readonly avatar: BotAvatar;
   readonly onAvatarChange: (value: BotAvatar) => void;
-  /** Persist avatar when the edit dialog closes (existing bots only). */
   readonly onAvatarDialogClose?: () => void;
   readonly modelSelection: ModelSelection;
   readonly onModelSelect: (selection: ModelSelection) => void;
@@ -49,7 +48,6 @@ interface BotEditorProps {
   readonly onScheduleMinutesChange: (value: string) => void;
 }
 
-/** Bot settings sheet: edit the selected bot, or the new-bot form. */
 export function BotEditor({
   selected,
   name,

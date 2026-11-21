@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { avatarFromBotId, type BotAvatar } from "@bebots/domain";
+import { type BotAvatar } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
@@ -36,6 +36,8 @@ declare global {
   }
 }
 
+const NEW_BOT_FORM_AVATAR: BotAvatar = { face: "face-0", color: 0, shape: "circle" };
+
 export function App() {
   const [platform, setPlatform] = useState<string>("unknown");
   const [endpoint, setEndpoint] = useState<ApiEndpoint | null>(null);
@@ -44,12 +46,13 @@ export function App() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [persona, setPersona] = useState("");
-  const [avatar, setAvatar] = useState<BotAvatar>(() => avatarFromBotId("new-bot"));
+  const [avatar, setAvatar] = useState<BotAvatar>(NEW_BOT_FORM_AVATAR);
+  const [avatarCustomized, setAvatarCustomized] = useState(false);
   const draftRef = useRef({
     name: "",
     description: "",
     persona: "",
-    avatar: avatarFromBotId("new-bot") as BotAvatar,
+    avatar: NEW_BOT_FORM_AVATAR,
     botModelSelection: { kind: "app-default" } as ModelSelection,
   });
   const botPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -388,17 +391,17 @@ export function App() {
     if (!selectedId) {
       syncedBotIdRef.current = null;
       const emptyModel = { kind: "app-default" } as ModelSelection;
-      const emptyAvatar = avatarFromBotId("new-bot");
       setName("");
       setDescription("");
       setPersona("");
-      setAvatar(emptyAvatar);
+      setAvatar(NEW_BOT_FORM_AVATAR);
+      setAvatarCustomized(false);
       setBotModelSelection(emptyModel);
       draftRef.current = {
         name: "",
         description: "",
         persona: "",
-        avatar: emptyAvatar,
+        avatar: NEW_BOT_FORM_AVATAR,
         botModelSelection: emptyModel,
       };
       return;
@@ -412,6 +415,7 @@ export function App() {
     setDescription(bot.description);
     setPersona(bot.persona);
     setAvatar(bot.avatar);
+    setAvatarCustomized(false);
     setBotModelSelection(modelSelection);
     draftRef.current = {
       name: bot.name,
@@ -462,28 +466,12 @@ export function App() {
     };
   }, []);
 
-  const handleNameChange = useCallback(
-    (value: string) => {
-      setName(value);
-      draftRef.current = { ...draftRef.current, name: value };
-      schedulePersistBot();
-    },
-    [schedulePersistBot],
-  );
-
-  const handleDescriptionChange = useCallback(
-    (value: string) => {
-      setDescription(value);
-      draftRef.current = { ...draftRef.current, description: value };
-      schedulePersistBot();
-    },
-    [schedulePersistBot],
-  );
-
-  const handlePersonaChange = useCallback(
-    (value: string) => {
-      setPersona(value);
-      draftRef.current = { ...draftRef.current, persona: value };
+  const handleDraftStringChange = useCallback(
+    (field: "name" | "description" | "persona", value: string) => {
+      if (field === "name") setName(value);
+      else if (field === "description") setDescription(value);
+      else setPersona(value);
+      draftRef.current = { ...draftRef.current, [field]: value };
       schedulePersistBot();
     },
     [schedulePersistBot],
@@ -491,6 +479,7 @@ export function App() {
 
   const handleAvatarChange = useCallback((value: BotAvatar) => {
     setAvatar(value);
+    setAvatarCustomized(true);
     draftRef.current = { ...draftRef.current, avatar: value };
   }, []);
 
@@ -539,7 +528,7 @@ export function App() {
         description,
         persona,
         model: selectionToApiModel(botModelSelection),
-        avatar,
+        ...(avatarCustomized ? { avatar } : {}),
       });
       setSelectedId(bot.id);
       setView("bot-settings");
@@ -857,11 +846,11 @@ export function App() {
             <BotEditor
               selected={selected}
               name={name}
-              onNameChange={handleNameChange}
+              onNameChange={(value) => handleDraftStringChange("name", value)}
               description={description}
-              onDescriptionChange={handleDescriptionChange}
+              onDescriptionChange={(value) => handleDraftStringChange("description", value)}
               persona={persona}
-              onPersonaChange={handlePersonaChange}
+              onPersonaChange={(value) => handleDraftStringChange("persona", value)}
               avatar={avatar}
               onAvatarChange={handleAvatarChange}
               onAvatarDialogClose={handleAvatarDialogClose}

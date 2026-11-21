@@ -32,6 +32,14 @@ function validateName(name: string): void {
   }
 }
 
+function decodeAvatar(value: unknown): BotAvatar {
+  const validated = validateBotAvatar(value);
+  if (validated.valid === false) {
+    throw new ValidationError(validated.field, validated.message);
+  }
+  return validated.value;
+}
+
 export interface BotServiceDeps {
   readonly repo: BotRepository;
   readonly workspace: BotWorkspace;
@@ -73,11 +81,11 @@ export class BotService {
       }
       let avatar: BotAvatar | undefined;
       if (input.avatar !== undefined) {
-        const validated = validateBotAvatar(input.avatar);
-        if (validated.valid === false) {
-          return yield* Effect.fail(new ValidationError(validated.field, validated.message));
+        try {
+          avatar = decodeAvatar(input.avatar);
+        } catch (e) {
+          return yield* Effect.fail(e as ValidationError);
         }
-        avatar = validated.value;
       }
       let id: BotId;
       try {
@@ -144,12 +152,12 @@ export class BotService {
       let decodedAvatar: BotAvatar | undefined;
       let hasAvatar = false;
       if (input.avatar !== undefined) {
-        const validated = validateBotAvatar(input.avatar);
-        if (validated.valid === false) {
-          return yield* Effect.fail(new ValidationError(validated.field, validated.message));
+        try {
+          decodedAvatar = decodeAvatar(input.avatar);
+          hasAvatar = true;
+        } catch (e) {
+          return yield* Effect.fail(e as ValidationError);
         }
-        decodedAvatar = validated.value;
-        hasAvatar = true;
       }
       const updated: Bot = {
         ...existing,

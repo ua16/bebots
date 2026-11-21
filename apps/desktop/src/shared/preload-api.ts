@@ -1,13 +1,11 @@
+import type { BotAvatar } from "@bebots/domain";
+
 export interface BebotsModelRef {
   readonly providerID: string;
   readonly id: string;
 }
 
-export interface BebotsBotAvatar {
-  readonly face: string;
-  readonly color: number;
-  readonly shape: string;
-}
+export type BebotsBotAvatar = BotAvatar;
 
 export interface BebotsBot {
   readonly id: string;

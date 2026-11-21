@@ -4,9 +4,7 @@ import type { SqliteDatabase } from "./database.js";
 interface Migration {
   readonly version: number;
   readonly name: string;
-  /** Schema DDL. Optional when `run` alone does the work. */
   readonly sql?: string;
-  /** Optional JS backfill / data transform after `sql`. */
   readonly run?: (db: SqliteDatabase) => void;
 }
 

@@ -6,7 +6,6 @@ export type AvatarShapeId = (typeof AVATAR_SHAPES)[number];
 
 export const AVATAR_COLOR_COUNT = 10;
 
-/** Shared saturation / lightness for the 10-hue palette. */
 export const AVATAR_SATURATION = 81;
 export const AVATAR_LIGHTNESS = 56;
 
@@ -29,10 +28,17 @@ export const LEGACY_BOT_COLORS: readonly string[] = [
   "#8C64FF",
 ];
 
+/** Stored avatar. face/shape stay plain strings so unknown ids survive round-trips. */
 export interface BotAvatar {
   readonly face: string;
   readonly color: number;
   readonly shape: string;
+}
+
+export interface KnownBotAvatar {
+  readonly face: AvatarFaceId;
+  readonly color: number;
+  readonly shape: AvatarShapeId;
 }
 
 export function hashBotId(id: string): number {
@@ -82,7 +88,6 @@ export function serializeBotAvatar(avatar: BotAvatar): string {
   });
 }
 
-/** Parse stored JSON. Invalid / empty → `null` (caller supplies a default). */
 export function parseBotAvatar(value: string | null | undefined): BotAvatar | null {
   if (!value) return null;
   try {
@@ -98,10 +103,9 @@ export function parseBotAvatar(value: string | null | undefined): BotAvatar | nu
 }
 
 export type ValidatedBotAvatar =
-  | { readonly valid: true; readonly value: BotAvatar }
+  | { readonly valid: true; readonly value: KnownBotAvatar }
   | { readonly valid: false; readonly field: string; readonly message: string };
 
-/** Strict write validation: unknown face/shape/color are rejected. */
 export function validateBotAvatar(value: unknown): ValidatedBotAvatar {
   if (value === null || typeof value !== "object") {
     return { valid: false, field: "avatar", message: "Avatar must be an object" };
@@ -127,11 +131,7 @@ export function validateBotAvatar(value: unknown): ValidatedBotAvatar {
   return { valid: true, value: { face: obj.face, color, shape: obj.shape } };
 }
 
-/**
- * Display resolve: unknown face/shape/color fall back without mutating storage.
- * Pass `null`/`undefined` for unassigned → caller should render gray disc.
- */
-export function resolveBotAvatar(avatar: BotAvatar | null | undefined): BotAvatar | null {
+export function resolveBotAvatar(avatar: BotAvatar | null | undefined): KnownBotAvatar | null {
   if (!avatar) return null;
   return {
     face: isKnownFace(avatar.face) ? avatar.face : AVATAR_FACES[0],
@@ -140,8 +140,7 @@ export function resolveBotAvatar(avatar: BotAvatar | null | undefined): BotAvata
   };
 }
 
-/** Deterministic create default from bot id. */
-export function avatarFromBotId(id: string): BotAvatar {
+export function avatarFromBotId(id: string): KnownBotAvatar {
   const h = hashBotId(id);
   return {
     face: AVATAR_FACES[h % AVATAR_FACES.length]!,
@@ -181,7 +180,6 @@ function hueDistance(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
-/** Nearest palette index to a legacy Figma hex. */
 export function nearestAvatarColorIndex(hex: string): number {
   const { r, g, b } = hexToRgb(hex);
   const target = rgbToHue(r, g, b);
@@ -201,8 +199,7 @@ function legacyColorForBotId(id: string): string {
   return LEGACY_BOT_COLORS[hashBotId(id) % LEGACY_BOT_COLORS.length] ?? LEGACY_BOT_COLORS[0]!;
 }
 
-/** Migration backfill: face-0, nearest hue to old hashed solid, circle. */
-export function avatarForMigration(id: string): BotAvatar {
+export function avatarForMigration(id: string): KnownBotAvatar {
   return {
     face: AVATAR_FACES[0],
     color: nearestAvatarColorIndex(legacyColorForBotId(id)),

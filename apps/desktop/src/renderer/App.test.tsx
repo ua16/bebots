@@ -363,6 +363,71 @@ describe("App", () => {
     expect(((await screen.findByLabelText("Name")) as HTMLInputElement).value).toBe("Autosaved");
   });
 
+  it("omits avatar on create so the server can default from the real bot id", async () => {
+    const created = {
+      ...bot,
+      id: "generated-bot-id",
+      name: "Form bot",
+      avatar: avatarFromBotId("generated-bot-id"),
+    };
+    const api = installApi({
+      bots: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+        create: vi.fn(async () => created),
+        update: vi.fn(async () => created),
+        archive: vi.fn(async () => created),
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Bot settings" }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Form bot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await vi.waitFor(() => {
+      expect(api.bots.create).toHaveBeenCalledWith(
+        expect.not.objectContaining({ avatar: expect.anything() }),
+      );
+    });
+    expect(api.bots.create).toHaveBeenCalledWith(expect.objectContaining({ name: "Form bot" }));
+  });
+
+  it("sends a customized avatar when creating from the new-bot form", async () => {
+    const nextAvatar = { face: "face-2", color: 4, shape: "squircle" as const };
+    const created = {
+      ...bot,
+      id: "generated-bot-id",
+      name: "Custom face",
+      avatar: nextAvatar,
+    };
+    const api = installApi({
+      bots: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+        create: vi.fn(async () => created),
+        update: vi.fn(async () => created),
+        archive: vi.fn(async () => created),
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Bot settings" }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Custom face" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit avatar" }));
+    fireEvent.click(screen.getByRole("button", { name: "face-2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Color 4" }));
+    fireEvent.click(screen.getByRole("button", { name: "Squircle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await vi.waitFor(() => {
+      expect(api.bots.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Custom face", avatar: nextAvatar }),
+      );
+    });
+  });
+
   it("persists avatar when the edit dialog closes", async () => {
     const nextAvatar = { face: "face-0", color: 0, shape: "squircle" as const };
     let stored: typeof bot & { model?: { providerID: string; id: string } | null } = { ...bot };

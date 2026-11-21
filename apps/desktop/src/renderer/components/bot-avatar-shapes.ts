@@ -1,10 +1,9 @@
-/** Shape path helpers in the shared 0..100 avatar viewBox. */
+import type { AvatarShapeId } from "@bebots/domain";
 
 export function circlePath(): string {
   return "M 50 6 A 44 44 0 1 1 49.9 6 Z";
 }
 
-/** Squircle approximation (superellipse-ish rounded square). */
 export function squirclePath(): string {
   return [
     "M 22 8",
@@ -18,10 +17,7 @@ export function squirclePath(): string {
   ].join(" ");
 }
 
-/**
- * 8-point star with rounded tips: alternate outer/inner radii, quadratic
- * through each tip so points stay soft rather than sharp.
- */
+/** 8-point star: alternate radii, quadratic through each tip for soft points. */
 export function roundedStarPath(): string {
   const cx = 50;
   const cy = 50;
@@ -50,7 +46,7 @@ export function roundedStarPath(): string {
   return parts.join(" ");
 }
 
-export function shapePath(shape: string): string {
+export function shapePath(shape: AvatarShapeId | string): string {
   switch (shape) {
     case "squircle":
       return squirclePath();
