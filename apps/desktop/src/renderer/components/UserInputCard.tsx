@@ -77,13 +77,15 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
             {field.description && field.title ? (
               <div className="user-input-description">{field.description}</div>
             ) : null}
-            <div className="user-input-options">
+            <div className="user-input-options" role={multi ? "group" : "radiogroup"}>
               {(field.options ?? []).map((opt) => {
                 const active = (selected[field.key] ?? []).includes(opt.value);
                 return (
                   <button
                     key={opt.value}
                     type="button"
+                    role={multi ? "checkbox" : "radio"}
+                    aria-checked={active}
                     className={"user-input-option" + (active ? " selected" : "")}
                     disabled={busy}
                     onClick={() => toggle(field.key, opt.value, multi)}
@@ -95,32 +97,39 @@ export function UserInputCard({ form, busy = false, onSubmit, onDismiss }: UserI
                   </button>
                 );
               })}
+              {allowCustom ? (
+                <div className="user-input-custom-row">
+                  <input
+                    className="user-input-custom"
+                    type="text"
+                    disabled={busy}
+                    placeholder="Type your own answer"
+                    value={custom[field.key] ?? ""}
+                    onChange={(e) =>
+                      setCustom((prev) => ({ ...prev, [field.key]: e.target.value }))
+                    }
+                  />
+                </div>
+              ) : null}
             </div>
-            {allowCustom ? (
-              <input
-                className="user-input-custom"
-                type="text"
-                disabled={busy}
-                placeholder="Type your own answer"
-                value={custom[field.key] ?? ""}
-                onChange={(e) =>
-                  setCustom((prev) => ({ ...prev, [field.key]: e.target.value }))
-                }
-              />
-            ) : null}
           </div>
         );
       })}
       <div className="user-input-actions">
         <button
           type="button"
-          className="pill-button"
+          className="user-input-action"
           disabled={busy}
           onClick={() => onSubmit(buildAnswers())}
         >
           Submit
         </button>
-        <button type="button" className="pill-button" disabled={busy} onClick={onDismiss}>
+        <button
+          type="button"
+          className="user-input-action user-input-action-muted"
+          disabled={busy}
+          onClick={onDismiss}
+        >
           Dismiss
         </button>
       </div>

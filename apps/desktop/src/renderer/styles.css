@@ -465,37 +465,38 @@ body,
 .user-input-card {
   flex: none;
   margin: 0 44px 0.75rem;
-  padding: 1rem 1.1rem;
-  border: 1px solid var(--stroke);
-  border-radius: 18px;
-  background: var(--surface);
+  padding: 0.35rem 0.25rem 0.75rem;
+  background: transparent;
 }
 
 .user-input-title {
-  margin-bottom: 0.75rem;
+  margin: 0 0.5rem 0.85rem;
   font-size: 1.05rem;
   font-weight: 600;
 }
 
 .user-input-field + .user-input-field {
-  margin-top: 0.9rem;
+  margin-top: 1.1rem;
 }
 
 .user-input-question {
-  margin-bottom: 0.35rem;
+  margin: 0 0.5rem 0.2rem;
   font-weight: 500;
 }
 
 .user-input-description {
-  margin-bottom: 0.45rem;
+  margin: 0 0.5rem 0.55rem;
   color: var(--muted);
   font-size: 0.9rem;
 }
 
 .user-input-options {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
+  flex-direction: column;
+}
+
+.user-input-options > * + * {
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 35%, transparent);
 }
 
 .user-input-option {
@@ -503,41 +504,87 @@ body,
   flex-direction: column;
   align-items: flex-start;
   gap: 0.15rem;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--stroke);
-  border-radius: 999px;
+  width: 100%;
+  margin: 0;
+  padding: 0.7rem 0.5rem;
+  border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--text);
+  text-align: left;
   cursor: pointer;
   font: inherit;
 }
 
+.user-input-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
 .user-input-option.selected {
-  border-color: var(--text);
-  background: color-mix(in srgb, var(--text) 8%, transparent);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.user-input-option.selected .user-input-option-label {
+  font-weight: 600;
 }
 
 .user-input-option-desc {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+}
+
+.user-input-custom-row {
+  padding: 0.55rem 0.5rem 0.15rem;
 }
 
 .user-input-custom {
   box-sizing: border-box;
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid var(--stroke);
-  border-radius: 12px;
+  padding: 0.35rem 0;
+  border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
 }
 
+.user-input-custom::placeholder {
+  color: var(--muted);
+}
+
+.user-input-custom:focus {
+  outline: none;
+}
+
 .user-input-actions {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
+  gap: 0.85rem;
+  margin: 0.85rem 0.5rem 0;
+}
+
+.user-input-action {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+}
+
+.user-input-action:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--text) 75%, var(--muted));
+}
+
+.user-input-action-muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.user-input-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .composer-blocked {
