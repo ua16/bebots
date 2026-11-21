@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Effect, Stream } from "effect";
-import { asBotId } from "@bebots/domain";
+import { asBotId, asFormId } from "@bebots/domain";
 import type { RunHandle, RuntimeEvent } from "@bebots/application";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
@@ -176,6 +176,7 @@ function hangingHandler(sessionId = "sess-1") {
     if (method === "POST" && path === "/api/session") return jsonResponse({ id: sessionId });
     if (method === "POST" && path.endsWith("/prompt")) return noContent();
     if (method === "POST" && path.endsWith("/interrupt")) return noContent();
+    if (method === "DELETE" && path.includes("/form/")) return noContent();
     if (method === "GET" && path.startsWith("/api/session/")) {
       return jsonResponse({ id: path.split("/").pop() });
     }
@@ -396,6 +397,26 @@ describe("OpenCodeRuntime", () => {
 
     const events = await collectEvents(runtime.streamEvents(handle));
     expect(events.some((e) => e._tag === "failed")).toBe(true);
+  });
+
+  it("dismisses a form and interrupts the session", async () => {
+    announceServer(proc);
+    const { fn: fetchMock, calls } = makeFetch(hangingHandler());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runtime = new OpenCodeRuntime();
+    const handle = await start(runtime);
+
+    await Effect.runPromise(runtime.dismissForm(handle, asFormId("frm_1")));
+    const result = await Effect.runPromise(runtime.getResult(handle));
+    expect(result.exitCode).toBe(130);
+    expect(result.summary).toBe("cancelled");
+    expect(
+      calls.some(
+        (c) => c.method === "DELETE" && c.path === "/api/session/sess-1/form/frm_1",
+      ),
+    ).toBe(true);
+    expect(calls.some((c) => c.path.endsWith("/interrupt?resume=false"))).toBe(true);
   });
 
   it("marks a run as timed out", async () => {

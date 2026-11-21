@@ -841,6 +841,18 @@ export class OpenCodeRuntime implements AgentRuntime {
         if (!state?.sessionId) throw new Error("Unknown run or session");
         const server = await self.ensureServer();
         await self.request(server, "DELETE", `/api/session/${state.sessionId}/form/${formId}`);
+        state.cancelled = true;
+        try {
+          await self.request(
+            server,
+            "POST",
+            `/api/session/${state.sessionId}/interrupt?resume=false`,
+            {},
+          );
+        } catch {
+          /* ignore */
+        }
+        self.notify(state);
       },
       catch: (cause: unknown) => makeError("Failed to dismiss form", cause),
     });
