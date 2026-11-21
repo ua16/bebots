@@ -307,7 +307,16 @@ export class RunService {
             } else if (event._tag === "user_input_resolved" && event.outcome === "answered") {
               yield* self.clearAwaitingInput(runId, "running");
             }
-          }),
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError(
+                "Run event handling failed",
+                runId,
+                event._tag,
+                describeError(Cause.squash(cause)),
+              ),
+            ),
+          ),
         ).pipe(Effect.ignore);
 
         const current = yield* self.runRepo.findById(runId);

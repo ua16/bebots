@@ -213,53 +213,74 @@ export function App() {
     void refreshMessages(id);
   };
 
+  const hydrateUserInput = async (
+    runId: string,
+    conversationId: string,
+    afterCreatedAt: number,
+    endpointAt: ApiEndpoint,
+  ) => {
+    try {
+      const form = await apiRequest(
+        endpointAt,
+        `/api/v1/runs/${encodeURIComponent(runId)}/input`,
+        (c) => c.runs.getRunInput({ params: { id: runId } }),
+      );
+      const domainForm: Form = {
+        id: asFormId(form.id),
+        sessionId: form.sessionId,
+        title: form.title,
+        fields: form.fields.map((f) => ({
+          key: f.key,
+          type: f.type as Form["fields"][number]["type"],
+          ...(f.title !== undefined ? { title: f.title } : {}),
+          ...(f.description !== undefined ? { description: f.description } : {}),
+          ...(f.custom !== undefined ? { custom: f.custom } : {}),
+          ...(f.options !== undefined ? { options: f.options } : {}),
+          ...(f.url !== undefined ? { url: f.url } : {}),
+        })) as Form["fields"],
+      };
+      if (!isDesktopRenderableForm(domainForm)) {
+        await apiRequest(
+          endpointAt,
+          `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
+          (c) => c.runs.dismissRunInput({ params: { id: runId } }),
+        );
+        setPendingReply(false);
+        setThreadNotice("This question uses a form shape the desktop app can't show yet.");
+        return;
+      }
+      setPendingReply(false);
+      setPendingUserInput({ runId, form: domainForm, conversationId, afterCreatedAt });
+    } catch (e) {
+      setPendingReply(false);
+      pushError(`Could not load the bot's question: ${String(e)}`);
+    }
+  };
+
+  /**
+   * Wait for a run via the preload bridge (no HTTP spam). Branches when the
+   * run needs input or reaches a terminal status.
+   */
   const watchRunForInput = async (
     runId: string,
     conversationId: string,
     afterCreatedAt: number,
     endpointAt: ApiEndpoint,
   ) => {
-    for (let i = 0; i < 240; i++) {
+    const bridge = bebots?.runs;
+    for (let i = 0; i < 120; i++) {
       if (activeIdRef.current !== conversationId) return;
       try {
-        const run = (await apiRequest(
-          endpointAt,
-          `/api/v1/runs/${encodeURIComponent(runId)}`,
-          (c) => c.runs.getRun({ params: { id: runId } }),
-        )) as { status?: string } | null;
+        const run = bridge
+          ? await bridge.await(runId, 2_000)
+          : ((await apiRequest(
+              endpointAt,
+              `/api/v1/runs/${encodeURIComponent(runId)}`,
+              (c) => c.runs.getRun({ params: { id: runId } }),
+            )) as { status?: string } | null);
         if (!run) return;
         if (run.status === "awaiting_input") {
-          const form = await apiRequest(
-            endpointAt,
-            `/api/v1/runs/${encodeURIComponent(runId)}/input`,
-            (c) => c.runs.getRunInput({ params: { id: runId } }),
-          );
-          const domainForm: Form = {
-            id: asFormId(form.id),
-            sessionId: form.sessionId,
-            title: form.title,
-            fields: form.fields.map((f) => ({
-              key: f.key,
-              type: f.type as Form["fields"][number]["type"],
-              ...(f.title !== undefined ? { title: f.title } : {}),
-              ...(f.description !== undefined ? { description: f.description } : {}),
-              ...(f.custom !== undefined ? { custom: f.custom } : {}),
-              ...(f.options !== undefined ? { options: f.options } : {}),
-              ...(f.url !== undefined ? { url: f.url } : {}),
-            })) as Form["fields"],
-          };
-          if (!isDesktopRenderableForm(domainForm)) {
-            await apiRequest(
-              endpointAt,
-              `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
-              (c) => c.runs.dismissRunInput({ params: { id: runId } }),
-            );
-            setPendingReply(false);
-            setThreadNotice("This question uses a form shape the desktop app can't show yet.");
-            return;
-          }
-          setPendingReply(false);
-          setPendingUserInput({ runId, form: domainForm, conversationId, afterCreatedAt });
+          await hydrateUserInput(runId, conversationId, afterCreatedAt, endpointAt);
           return;
         }
         if (
@@ -273,9 +294,8 @@ export function App() {
           return;
         }
       } catch {
-        /* keep polling */
+        /* keep waiting */
       }
-      await new Promise((r) => window.setTimeout(r, 500));
     }
     setPendingReply(false);
     setThreadNotice("No reply yet — the run may still be in flight or failed. Check run history.");

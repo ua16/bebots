@@ -451,6 +451,55 @@ export class OpenCodeRuntime implements AgentRuntime {
     this.notify(state);
   }
 
+  /** Backup when `form.created` was missed on the event stream. */
+  private async reconcilePendingForm(server: ServerInfo, state: RunState): Promise<void> {
+    if (state.done || state.cancelled || state.awaitingFormId !== null || !state.sessionId) return;
+    try {
+      const raw = await this.request<unknown>(
+        server,
+        "GET",
+        `/api/session/${state.sessionId}/form`,
+      );
+      const list = Array.isArray(raw) ? raw : [];
+      const pending = list.find((item) => item && typeof (item as { id?: unknown }).id === "string");
+      if (!pending) return;
+      this.handleNativeEvent(server, state, { type: "form.created", data: { form: pending } });
+    } catch {
+      /* ignore transient list failures */
+    }
+  }
+
+  /** Backup when `session.execution.*` was missed on the event stream. */
+  private async reconcileCompletion(server: ServerInfo, state: RunState): Promise<void> {
+    if (state.done || state.cancelled || state.awaitingFormId !== null || !state.sessionId) return;
+    try {
+      const msgs = await this.request<unknown[]>(
+        server,
+        "GET",
+        `/api/session/${state.sessionId}/message`,
+      );
+      const list = Array.isArray(msgs) ? msgs : ((msgs as { data?: unknown[] })?.data ?? []);
+      const fresh = (list as any[]).filter((m: any) => {
+        if (m?.id === undefined || m?.id === null) return true;
+        return !state.priorMessageIds.has(String(m.id));
+      });
+      const idle = fresh.find((m: any) => m?.type === "idle");
+      const completedAssistant = fresh.find(
+        (m: any) =>
+          m?.type === "assistant" && (m?.finish === "stop" || m?.finish === "length"),
+      );
+      if (idle || completedAssistant) {
+        await this.finishRun(
+          server,
+          state,
+          idle !== undefined && idle.outcome !== "succeeded" ? "failed" : "succeeded",
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   private handleNativeEvent(
     server: ServerInfo,
     state: RunState,
@@ -595,13 +644,22 @@ export class OpenCodeRuntime implements AgentRuntime {
           text: request.prompt,
         });
 
-        // Watch remaining execution timeout (paused while awaiting forms).
+        // Watch timeout, reconcile pending forms (SSE can miss frames in some
+        // hosts), and fall back to message-based completion if events stall.
         void (async () => {
           try {
+            let ticks = 0;
             while (!state.done && !state.cancelled) {
               if (state.awaitingFormId !== null) {
-                await sleep(200);
+                await sleep(250);
                 continue;
+              }
+              ticks += 1;
+              if (ticks % 2 === 0) {
+                await self.reconcilePendingForm(server, state);
+              }
+              if (ticks % 4 === 0) {
+                await self.reconcileCompletion(server, state);
               }
               const left = self.remainingMs(state);
               if (left <= 0) {
