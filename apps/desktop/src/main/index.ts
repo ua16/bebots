@@ -30,7 +30,10 @@ import {
   ActivityService,
   LiveEventBus,
   withLiveActivityPublishing,
+  withLiveConversationPublishing,
+  withLiveMessagePublishing,
   withLiveRunPublishing,
+  withLiveSchedulePublishing,
 } from "@bebots/application";
 import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
@@ -201,8 +204,11 @@ async function setupBotService(): Promise<void> {
   const settingsRepo = createSqliteSettingsRepository(db);
   const settingsService = new AppSettingsService(settingsRepo);
 
-  const conversationRepo = createSqliteConversationRepository(db);
-  const messageRepo = createSqliteMessageRepository(db);
+  const conversationRepo = withLiveConversationPublishing(
+    createSqliteConversationRepository(db),
+    liveEvents,
+  );
+  const messageRepo = withLiveMessagePublishing(createSqliteMessageRepository(db), liveEvents);
   const conversationSessionRepo = createSqliteConversationSessionRepository(db);
   const fileIndexRepo = createSqliteFileIndexRepository(db);
   const taskRepo = createSqliteTaskRepository(db);
@@ -291,7 +297,10 @@ async function setupBotService(): Promise<void> {
   // Durable schedules (PLAN §9): the scheduler owns due-occurrence recording
   // and durable run enqueueing; runs carry trigger type "schedule" and are
   // attributed back to their occurrence via the run-result hook.
-  const scheduleRepo = createSqliteScheduleRepository(db);
+  const scheduleRepo = withLiveSchedulePublishing(
+    createSqliteScheduleRepository(db),
+    liveEvents,
+  );
   const scheduleService = new ScheduleService({
     scheduleRepo,
     botRepo: repo,

@@ -73,6 +73,19 @@ describe("LiveEventBus", () => {
     expect(matchesRunId(otherActivity, "r1")).toBe(false);
     expect(matchesRunId(runEvent, "r1")).toBe(true);
     expect(matchesRunId(runUpdated, "r1")).toBe(true);
+    expect(
+      matchesRunId(
+        {
+          v: 1,
+          id: "x",
+          at: 1,
+          kind: "conversation.updated",
+          conversationId: "c1",
+          reason: "message",
+        },
+        "r1",
+      ),
+    ).toBe(false);
   });
 });
 

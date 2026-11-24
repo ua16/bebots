@@ -559,6 +559,23 @@ const LiveEventPayload = Schema.Union([
     kind: Schema.Literal("run.updated"),
     run: Schema.Unknown,
   }),
+  Schema.Struct({
+    v: Schema.Literal(1),
+    id: Schema.String,
+    at: Schema.Number,
+    kind: Schema.Literal("conversation.updated"),
+    conversationId: Schema.String,
+    reason: Schema.Literals(["created", "updated", "deleted", "message"]),
+  }),
+  Schema.Struct({
+    v: Schema.Literal(1),
+    id: Schema.String,
+    at: Schema.Number,
+    kind: Schema.Literal("schedule.updated"),
+    scheduleId: Schema.String,
+    botId: Schema.String,
+    reason: Schema.Literals(["created", "updated", "deleted", "occurrence"]),
+  }),
 ]);
 
 const events = HttpApiGroup.make("events").add(
