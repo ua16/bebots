@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type BotAvatar } from "@bebots/domain";
+import { type BotAvatar, formFromWire, isDesktopRenderableForm } from "@bebots/domain";
+import type { Form } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
 import type { BebotsPreloadApi, BebotsBot } from "../shared/preload-api";
@@ -27,8 +28,20 @@ import { ToastStack, type ToastItem } from "./components/Toast";
 import { BotEditor } from "./components/BotEditor";
 import { MessageThread } from "./components/MessageThread";
 import { Composer } from "./components/Composer";
+import {
+  UserInputCard,
+  answersFromComposerDraft,
+  formAllowsComposerAnswer,
+} from "./components/UserInputCard";
 import { useMentions } from "./hooks/useMentions";
 import "./styles.css";
+
+interface PendingUserInput {
+  readonly runId: string;
+  readonly form: Form;
+  readonly conversationId: string;
+  readonly afterCreatedAt: number;
+}
 
 declare global {
   interface Window {
@@ -105,6 +118,8 @@ export function App() {
   const [scheduleMinutes, setScheduleMinutes] = useState("60");
   // Chat surface state: reply-run indicator, notices.
   const [pendingReply, setPendingReply] = useState(false);
+  const [pendingUserInput, setPendingUserInput] = useState<PendingUserInput | null>(null);
+  const [userInputBusy, setUserInputBusy] = useState(false);
   const [threadNotice, setThreadNotice] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -195,56 +210,84 @@ export function App() {
     setActiveConversationId(id);
     setMessages([]);
     setPendingReply(false);
+    setPendingUserInput(null);
     setThreadNotice(null);
     setView("chat");
     if (contextBotId !== undefined) setSelectedId(contextBotId);
     void refreshMessages(id);
   };
 
-  /**
-   * A human message triggers a reply run for a participating bot (full reply
-   * loop, PLAN §12 M3). The bot's answer lands asynchronously when its run
-   * completes, so poll the thread briefly after sending and drive the typing
-   * indicator until it arrives — or surface a notice if it never does.
-   */
-  const pollForReply = (
+  const hydrateUserInput = async (
+    runId: string,
     conversationId: string,
     afterCreatedAt: number,
     endpointAt: ApiEndpoint,
   ) => {
-    let attempts = 0;
-    const tick = () => {
-      // The user may have switched conversations while the poll was pending;
-      // stop clobbering the thread once it is no longer the visible one.
-      if (activeIdRef.current !== conversationId) return;
-      attempts += 1;
-      void apiRequest(
+    try {
+      const form = await apiRequest(
         endpointAt,
-        `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
-        (c) => c.conversations.listMessages({ params: { id: conversationId } }),
-      )
-        .then((list) => {
-          setMessages(list);
-          const hasReply = list.some((m) => m.senderType === "bot" && m.createdAt > afterCreatedAt);
-          if (hasReply) {
-            setPendingReply(false);
-            setThreadNotice(null);
-            return;
-          }
-          if (attempts >= 40) {
-            setPendingReply(false);
-            setThreadNotice(
-              "No reply yet — the run may still be in flight or failed. Check run history.",
-            );
-            return;
-          }
-          window.setTimeout(tick, 1_500);
-        })
-        .catch(() => {
+        `/api/v1/runs/${encodeURIComponent(runId)}/input`,
+        (c) => c.runs.getRunInput({ params: { id: runId } }),
+      );
+      const domainForm = formFromWire(form);
+      if (!isDesktopRenderableForm(domainForm)) {
+        await apiRequest(
+          endpointAt,
+          `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
+          (c) => c.runs.dismissRunInput({ params: { id: runId } }),
+        );
+        setPendingReply(false);
+        setThreadNotice("This question uses a form shape the desktop app can't show yet.");
+        return;
+      }
+      setPendingReply(false);
+      setPendingUserInput({ runId, form: domainForm, conversationId, afterCreatedAt });
+    } catch (e) {
+      setPendingReply(false);
+      pushError(`Could not load the bot's question: ${String(e)}`);
+    }
+  };
+
+  /**
+   * Wait for a run via the preload bridge (no HTTP spam). Branches when the
+   * run needs input or reaches a terminal status.
+   */
+  const watchRunForInput = async (
+    runId: string,
+    conversationId: string,
+    afterCreatedAt: number,
+    endpointAt: ApiEndpoint,
+  ) => {
+    const bridge = bebots?.runs;
+    for (let i = 0; i < 120; i++) {
+      if (activeIdRef.current !== conversationId) return;
+      try {
+        const run = bridge
+          ? await bridge.await(runId, 2_000)
+          : ((await apiRequest(endpointAt, `/api/v1/runs/${encodeURIComponent(runId)}`, (c) =>
+              c.runs.getRun({ params: { id: runId } }),
+            )) as { status?: string } | null);
+        if (!run) return;
+        if (run.status === "awaiting_input") {
+          await hydrateUserInput(runId, conversationId, afterCreatedAt, endpointAt);
+          return;
+        }
+        if (
+          run.status === "succeeded" ||
+          run.status === "failed" ||
+          run.status === "cancelled" ||
+          run.status === "timed_out"
+        ) {
           setPendingReply(false);
-        });
-    };
-    window.setTimeout(tick, 1_500);
+          await refreshMessages(conversationId);
+          return;
+        }
+      } catch {
+        /* keep waiting */
+      }
+    }
+    setPendingReply(false);
+    setThreadNotice("No reply yet — the run may still be in flight or failed. Check run history.");
   };
 
   const createConversationWith = async (botId: string | null) => {
@@ -269,8 +312,40 @@ export function App() {
     }
   };
 
+  const replyPendingUserInput = (answers: Record<string, string | string[]>) => {
+    if (!endpoint || userInputBusy || pendingUserInput === null) return;
+    const { runId, conversationId, afterCreatedAt } = pendingUserInput;
+    setUserInputBusy(true);
+    void apiRequest(endpoint, `/api/v1/runs/${encodeURIComponent(runId)}/input/reply`, (c) =>
+      c.runs.replyRunInput({
+        params: { id: runId },
+        payload: { answers },
+      }),
+    )
+      .then(() => {
+        setPendingUserInput(null);
+        setDraft("");
+        mentions.clearMentions();
+        setPendingReply(true);
+        return refreshMessages(conversationId).then(() =>
+          watchRunForInput(runId, conversationId, afterCreatedAt, endpoint),
+        );
+      })
+      .catch((e) => pushError(String(e)))
+      .finally(() => setUserInputBusy(false));
+  };
+
   const handleSendMessage = async () => {
     if (!endpoint || draft.trim().length === 0) return;
+
+    if (pendingUserInput !== null) {
+      if (!formAllowsComposerAnswer(pendingUserInput.form)) return;
+      const answers = answersFromComposerDraft(pendingUserInput.form, draft);
+      if (answers === null) return;
+      replyPendingUserInput(answers);
+      return;
+    }
+
     // Sending from the empty state (a bot is picked but no thread open) starts
     // a fresh thread with that bot, then posts the message.
     let conversationId = activeConversationId;
@@ -297,7 +372,7 @@ export function App() {
       await refreshMessages(conversationId);
       if (reply.runId !== null) {
         setPendingReply(true);
-        pollForReply(conversationId, reply.message.createdAt, endpoint);
+        void watchRunForInput(reply.runId, conversationId, reply.message.createdAt, endpoint);
       } else {
         setPendingReply(false);
       }
@@ -885,15 +960,44 @@ export function App() {
                 messages={messages}
                 hasActiveConversation={activeConversation !== null}
                 bots={bots}
-                pendingReply={pendingReply}
+                pendingReply={pendingReply && pendingUserInput === null}
                 typingLabel={typingLabel}
                 threadNotice={threadNotice}
                 emptyHintBotName={headerBot?.name ?? "this bot"}
                 endRef={threadEndRef}
               />
+              {pendingUserInput !== null && (
+                <UserInputCard
+                  form={pendingUserInput.form}
+                  busy={userInputBusy}
+                  onDismiss={() => {
+                    if (!endpoint || userInputBusy) return;
+                    const { runId, conversationId } = pendingUserInput;
+                    setUserInputBusy(true);
+                    void apiRequest(
+                      endpoint,
+                      `/api/v1/runs/${encodeURIComponent(runId)}/input/dismiss`,
+                      (c) => c.runs.dismissRunInput({ params: { id: runId } }),
+                    )
+                      .then(() => {
+                        setPendingUserInput(null);
+                        setDraft("");
+                        setPendingReply(false);
+                        return refreshMessages(conversationId);
+                      })
+                      .catch((e) => pushError(String(e)))
+                      .finally(() => setUserInputBusy(false));
+                  }}
+                  onSubmit={replyPendingUserInput}
+                />
+              )}
               <Composer
                 draft={draft}
-                placeholder={composerPlaceholder}
+                placeholder={
+                  pendingUserInput !== null && formAllowsComposerAnswer(pendingUserInput.form)
+                    ? "Type your own answer…"
+                    : composerPlaceholder
+                }
                 inputRef={composerInputRef}
                 mentionQuery={mentions.mentionQuery}
                 mentionSuggestions={mentions.mentionSuggestions}
@@ -903,6 +1007,10 @@ export function App() {
                 onKeyDown={mentions.handleKeyDown}
                 onNewSession={() => void handleNewConversation()}
                 onSubmit={() => void handleSendMessage()}
+                disabled={
+                  userInputBusy ||
+                  (pendingUserInput !== null && !formAllowsComposerAnswer(pendingUserInput.form))
+                }
               />
             </>
           )}

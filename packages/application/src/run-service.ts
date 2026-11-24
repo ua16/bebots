@@ -4,6 +4,9 @@ import { Cause, Effect, Option, Stream } from "effect";
 import type {
   BotId,
   ConversationSession,
+  Form,
+  FormAnswers,
+  FormId,
   Run,
   RunId,
   RunStatus,
@@ -12,7 +15,12 @@ import type {
   ConversationSessionId,
   TaskId,
 } from "@bebots/domain";
-import { asRunId } from "@bebots/domain";
+import {
+  asRunId,
+  askAnswerMarkersFromForm,
+  encodeAskAnswerMarker,
+  isDesktopRenderableForm,
+} from "@bebots/domain";
 import type { AgentRuntime, RunHandle, RunRequest, RuntimeError, RuntimeEvent } from "./runtime.js";
 import type { ConversationSessionOps } from "./conversation-service.js";
 import type { ConversationReplyRecorder } from "./conversation-run-coordinator.js";
@@ -44,6 +52,9 @@ function describeError(error: unknown): string {
   }
   return String(error);
 }
+
+/** How long a run may wait for human form input before auto-dismiss. */
+export const INPUT_DEADLINE_MS = 12 * 60 * 60 * 1000;
 
 export interface RunServiceDeps {
   readonly runRepo: RunRepository;
@@ -113,6 +124,7 @@ export class RunService {
   private readonly maxConcurrentRunsPerBot: number;
   private paused: boolean = false;
   private readonly handles = new Map<string, RunHandle>();
+  private readonly inputDeadlineTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(deps: RunServiceDeps) {
     this.runRepo = deps.runRepo;
@@ -150,8 +162,13 @@ export class RunService {
       if (running.length >= self.maxConcurrentRuns) {
         return yield* Effect.fail(new ServiceError("Global run concurrency limit reached"));
       }
-      const runningForBot = yield* self.runRepo.findAll({ botId: input.botId, status: "running" });
-      if (runningForBot.length >= self.maxConcurrentRunsPerBot) {
+      const botRuns = yield* self.runRepo.findAll({ botId: input.botId });
+      const activeForBot = botRuns.filter(
+        (r) =>
+          String(r.botId) === String(input.botId) &&
+          (r.status === "running" || r.status === "awaiting_input"),
+      );
+      if (activeForBot.length >= self.maxConcurrentRunsPerBot) {
         return yield* Effect.fail(new ServiceError("Per-bot run concurrency limit reached"));
       }
       const prompt = (input.prompt ?? "").trim();
@@ -287,18 +304,43 @@ export class RunService {
       // terminal status. Failures are recorded on the run or logged, never
       // silently swallowed.
       const finalize: Effect.Effect<void> = Effect.gen(function* () {
-        // Event-stream failures must not abort result capture.
         yield* Stream.runForEach(self.runtime.streamEvents(handle), (event: RuntimeEvent) =>
-          self.runRepo.appendEvent(runId, event),
+          Effect.gen(function* () {
+            yield* self.runRepo.appendEvent(runId, event);
+            if (event._tag === "user_input_requested") {
+              yield* self.enterAwaitingInput(runId, event.formId);
+            } else if (event._tag === "user_input_resolved" && event.outcome === "answered") {
+              yield* self.clearAwaitingInput(runId, "running");
+            }
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError(
+                "Run event handling failed",
+                runId,
+                event._tag,
+                describeError(Cause.squash(cause)),
+              ),
+            ),
+          ),
         ).pipe(Effect.ignore);
 
         const current = yield* self.runRepo.findById(runId);
         if (!current || current.status === "cancelled") return;
 
         const result = yield* self.runtime.getResult(handle);
-        const terminalStatus: RunStatus = result.exitCode === 0 ? "succeeded" : "failed";
+        const terminalStatus: RunStatus =
+          result.exitCode === 0
+            ? "succeeded"
+            : result.exitCode === 130
+              ? "cancelled"
+              : result.exitCode === 124
+                ? "timed_out"
+                : "failed";
+        const latest = yield* self.runRepo.findById(runId);
+        if (!latest || latest.status === "cancelled") return;
+        const { pendingFormId: _pf, inputDeadlineAt: _dl, ...latestRest } = latest;
         const finalRun: Run = {
-          ...startedRun,
+          ...latestRest,
           status: terminalStatus,
           ...(result.sessionId !== undefined && { sessionId: result.sessionId }),
           endedAt: self.clock.now(),
@@ -307,6 +349,7 @@ export class RunService {
           updatedAt: self.clock.now(),
         };
         yield* self.runRepo.update(finalRun);
+        self.clearInputDeadline(String(runId));
 
         // Task result link: if this run was started for a task, update the
         // task's status and result reference.
@@ -422,13 +465,15 @@ export class RunService {
     return Effect.gen(function* () {
       const run = yield* self.runRepo.findById(id);
       if (!run) return null;
+      self.clearInputDeadline(String(id));
       const handle = self.handles.get(String(id));
       if (handle) {
         yield* self.runtime.cancelRun(handle);
       }
       self.handles.delete(String(id));
+      const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
       const updated: Run = {
-        ...run,
+        ...rest,
         status: "cancelled",
         endedAt: self.clock.now(),
         updatedAt: self.clock.now(),
@@ -445,6 +490,204 @@ export class RunService {
         yield* scheduleResults.recordRunResult(String(run.id), "cancelled").pipe(Effect.ignore);
       }
       return updated;
+    });
+  }
+
+  getInput(
+    id: RunId,
+  ): Effect.Effect<Form, NotFoundError | ServiceError | RuntimeError | RepositoryError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(id);
+      if (!run || run.status !== "awaiting_input" || run.pendingFormId === undefined) {
+        return yield* Effect.fail(new NotFoundError("RunInput", String(id)));
+      }
+      const handle = self.handles.get(String(id));
+      if (!handle || !self.runtime.getForm) {
+        return yield* Effect.fail(new ServiceError("Runtime cannot hydrate forms"));
+      }
+      return yield* self.runtime.getForm(handle, run.pendingFormId);
+    });
+  }
+
+  replyToInput(
+    id: RunId,
+    answers: FormAnswers,
+  ): Effect.Effect<
+    Run,
+    NotFoundError | ServiceError | ValidationError | RuntimeError | RepositoryError
+  > {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(id);
+      if (!run || run.status !== "awaiting_input" || run.pendingFormId === undefined) {
+        return yield* Effect.fail(new NotFoundError("RunInput", String(id)));
+      }
+      const handle = self.handles.get(String(id));
+      if (!handle || !self.runtime.replyToForm) {
+        return yield* Effect.fail(new ServiceError("Runtime cannot reply to forms"));
+      }
+      // Hydrate before reply — the form may be gone once OpenCode settles it.
+      const formOption =
+        self.runtime.getForm !== undefined
+          ? yield* self.runtime.getForm(handle, run.pendingFormId).pipe(Effect.option)
+          : Option.none<Form>();
+      yield* self.runtime.replyToForm(handle, run.pendingFormId, answers);
+      self.clearInputDeadline(String(id));
+      const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
+      const updated: Run = {
+        ...rest,
+        status: "running",
+        updatedAt: self.clock.now(),
+      };
+      yield* self.runRepo.update(updated);
+
+      const conversationId = run.conversationId;
+      const recorder = self.conversationMessages?.recordSystemMarker;
+      if (conversationId !== undefined && recorder !== undefined && Option.isSome(formOption)) {
+        for (const marker of askAnswerMarkersFromForm(formOption.value, answers)) {
+          yield* recorder(
+            String(conversationId),
+            encodeAskAnswerMarker(marker.question, marker.answer),
+          ).pipe(Effect.ignore);
+        }
+      }
+
+      return updated;
+    });
+  }
+
+  dismissInput(
+    id: RunId,
+  ): Effect.Effect<Run, NotFoundError | ServiceError | RuntimeError | RepositoryError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(id);
+      if (!run || run.status !== "awaiting_input" || run.pendingFormId === undefined) {
+        return yield* Effect.fail(new NotFoundError("RunInput", String(id)));
+      }
+      const handle = self.handles.get(String(id));
+      if (!handle || !self.runtime.dismissForm) {
+        return yield* Effect.fail(new ServiceError("Runtime cannot dismiss forms"));
+      }
+      yield* self.runtime.dismissForm(handle, run.pendingFormId);
+      self.clearInputDeadline(String(id));
+      const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
+      const updated: Run = {
+        ...rest,
+        status: "cancelled",
+        endedAt: self.clock.now(),
+        updatedAt: self.clock.now(),
+        summary: "dismissed",
+      };
+      yield* self.runRepo.update(updated);
+      self.handles.delete(String(id));
+      return updated;
+    });
+  }
+
+  /**
+   * Desktop v1 cannot show every form field kind. Decline unsupported forms
+   * the same way as an explicit dismiss (stops the run).
+   */
+  declineUnsupportedInput(
+    id: RunId,
+    form: Form,
+  ): Effect.Effect<Run | null, NotFoundError | ServiceError | RuntimeError | RepositoryError> {
+    if (isDesktopRenderableForm(form)) return Effect.succeed(null);
+    return this.dismissInput(id);
+  }
+
+  private enterAwaitingInput(
+    runId: RunId,
+    formId: FormId,
+  ): Effect.Effect<void, RepositoryError | NotFoundError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(runId);
+      if (
+        !run ||
+        run.status === "cancelled" ||
+        run.status === "succeeded" ||
+        run.status === "failed"
+      ) {
+        return;
+      }
+      const deadline = self.clock.now() + INPUT_DEADLINE_MS;
+      const updated: Run = {
+        ...run,
+        status: "awaiting_input",
+        pendingFormId: formId,
+        inputDeadlineAt: deadline,
+        updatedAt: self.clock.now(),
+      };
+      yield* self.runRepo.update(updated);
+      self.armInputDeadline(String(runId), deadline);
+    });
+  }
+
+  private clearAwaitingInput(
+    runId: RunId,
+    next: "running",
+  ): Effect.Effect<void, RepositoryError | NotFoundError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(runId);
+      if (!run || run.status !== "awaiting_input") return;
+      self.clearInputDeadline(String(runId));
+      const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
+      yield* self.runRepo.update({
+        ...rest,
+        status: next,
+        updatedAt: self.clock.now(),
+      });
+    });
+  }
+
+  private armInputDeadline(runId: string, deadlineAt: number): void {
+    this.clearInputDeadline(runId);
+    const delay = Math.max(0, deadlineAt - this.clock.now());
+    const timer = setTimeout(() => {
+      this.inputDeadlineTimers.delete(runId);
+      void Effect.runPromise(this.expireInput(asRunId(runId)).pipe(Effect.ignore));
+    }, delay);
+    this.inputDeadlineTimers.set(runId, timer);
+  }
+
+  private clearInputDeadline(runId: string): void {
+    const timer = this.inputDeadlineTimers.get(runId);
+    if (timer) {
+      clearTimeout(timer);
+      this.inputDeadlineTimers.delete(runId);
+    }
+  }
+
+  private expireInput(
+    id: RunId,
+  ): Effect.Effect<void, RepositoryError | RuntimeError | NotFoundError | ServiceError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const run = yield* self.runRepo.findById(id);
+      if (!run || run.status !== "awaiting_input" || run.pendingFormId === undefined) return;
+      const handle = self.handles.get(String(id));
+      if (handle && self.runtime.dismissForm) {
+        yield* self.runtime.dismissForm(handle, run.pendingFormId).pipe(Effect.ignore);
+      }
+      yield* self.runRepo.appendEvent(id, {
+        _tag: "user_input_resolved",
+        formId: run.pendingFormId,
+        outcome: "expired",
+        at: new Date(),
+      });
+      const { pendingFormId: _pf, inputDeadlineAt: _dl, ...rest } = run;
+      yield* self.runRepo.update({
+        ...rest,
+        status: "cancelled",
+        endedAt: self.clock.now(),
+        summary: "input expired",
+        updatedAt: self.clock.now(),
+      });
+      self.handles.delete(String(id));
     });
   }
 
@@ -475,26 +718,25 @@ export class RunService {
   cancelAllRuns(): Effect.Effect<void, RuntimeError> {
     const self = this;
     return Effect.gen(function* () {
-      const running = yield* self.runRepo
-        .findAll({ status: "running" })
-        .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
-      for (const run of running) {
-        yield* self.cancelRun(run.id).pipe(Effect.ignore);
+      for (const status of ["running", "awaiting_input"] as const) {
+        const runs = yield* self.runRepo
+          .findAll({ status })
+          .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
+        for (const run of runs) {
+          yield* self.cancelRun(run.id).pipe(Effect.ignore);
+        }
       }
       self.handles.clear();
     });
   }
 
   /**
-   * Cancel every queued/running run of one bot (bot deletion prep): in-flight
-   * runtime handles stop first so finalization cannot write rows or replies
-   * afterwards. Individual failures are ignored — a run that already finished
-   * (or whose row vanished) must not abort the sweep.
+   * Cancel every queued/running/awaiting_input run of one bot (bot deletion prep).
    */
   cancelRunsForBot(botId: BotId): Effect.Effect<void, RepositoryError> {
     const self = this;
     return Effect.gen(function* () {
-      for (const status of ["queued", "running"] as const) {
+      for (const status of ["queued", "running", "awaiting_input"] as const) {
         const runs = yield* self.runRepo
           .findAll({ botId, status })
           .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
@@ -506,13 +748,13 @@ export class RunService {
   }
 
   /**
-   * Cancel every queued/running run bound to a conversation (any bot) —
+   * Cancel every active run bound to a conversation (any bot) —
    * conversation deletion prep. Same failure policy as `cancelRunsForBot`.
    */
   cancelRunsForConversation(conversationId: ConversationId): Effect.Effect<void, RepositoryError> {
     const self = this;
     return Effect.gen(function* () {
-      for (const status of ["queued", "running"] as const) {
+      for (const status of ["queued", "running", "awaiting_input"] as const) {
         const runs = yield* self.runRepo
           .findAll({ conversationId, status })
           .pipe(Effect.catchCause(() => Effect.succeed([] as readonly Run[])));
@@ -541,6 +783,7 @@ export class RunService {
       while (Date.now() < deadline) {
         const run = yield* self.runRepo.findById(id);
         if (!run) return null;
+        // awaiting_input is returned so clients can show the form card.
         if (run.status !== "queued" && run.status !== "running") return run;
         yield* Effect.sleep("500 millis");
       }

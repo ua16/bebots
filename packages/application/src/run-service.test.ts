@@ -1,8 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
-import { asBotId, asConversationId, asRunId, avatarFromBotId } from "@bebots/domain";
-import type { ConversationSession } from "@bebots/domain";
+import {
+  asBotId,
+  asConversationId,
+  asFormId,
+  asRunId,
+  avatarFromBotId,
+  encodeAskAnswerMarker,
+  parseAskAnswerMarker,
+} from "@bebots/domain";
+import type { ConversationSession, Form } from "@bebots/domain";
 import { RunService } from "./run-service.js";
 import { ConversationSessionService } from "./conversation-service.js";
 import { AppSettingsService } from "./app-settings.js";
@@ -986,5 +994,120 @@ describe("RunService session scoping", () => {
       "bot-1:sess-bot-1",
       "bot-2:sess-bot-2",
     ]);
+  });
+
+  it("records ask-answer system markers when replying to form input", async () => {
+    const store = new Map<string, any>();
+    const runRepo: RunRepository = {
+      create: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
+      findById: (id) => Effect.succeed(store.get(id) ?? null),
+      findAll: () => Effect.succeed([...store.values()]),
+      update: (run) => {
+        store.set(run.id, run);
+        return Effect.succeed(run);
+      },
+      appendEvent: () => Effect.void,
+      listEvents: () => Effect.succeed([]),
+      deleteByBot: () => Effect.succeed(0),
+      deleteByConversation: () => Effect.succeed(0),
+    };
+    const botRepo: BotRepository = {
+      create: (b) => Effect.succeed(b),
+      findById: () =>
+        Effect.succeed({
+          id: "bot-1",
+          name: "Bot",
+          description: "",
+          persona: "",
+          status: "active",
+          avatar: avatarFromBotId("bot-1"),
+          createdAt: 1,
+          updatedAt: 1,
+        } as any),
+      findAll: () => Effect.succeed([]),
+      update: (b) => Effect.succeed(b),
+      delete: () => Effect.void,
+    };
+    const workspace: BotWorkspace = {
+      root: "/tmp/bots",
+      ensureHome: () => Effect.succeed("/tmp/bots/x"),
+      writePersona: () => Effect.void,
+      homePath: (id) => `/tmp/bots/${id}`,
+      removeHome: () => Effect.void,
+    };
+    const form: Form = {
+      id: asFormId("frm_1"),
+      sessionId: "ses_1",
+      title: "Questions",
+      fields: [
+        {
+          type: "string",
+          key: "q0",
+          description: "Which package manager?",
+          options: [
+            { value: "bun", label: "bun" },
+            { value: "npm", label: "npm" },
+          ],
+          custom: true,
+        },
+      ],
+    };
+    const markers: string[] = [];
+    const runtime: AgentRuntime = {
+      id: "fake",
+      capabilities: { streaming: true, resumableSessions: true, cancellation: true },
+      startRun: () => Effect.succeed({ runId: "rt-1", sessionId: "ses_1" } as RunHandle),
+      cancelRun: () => Effect.void,
+      streamEvents: () => Stream.empty,
+      getResult: () => Effect.never as Effect.Effect<RunResult, RuntimeError>,
+      getForm: () => Effect.succeed(form),
+      replyToForm: () => Effect.void,
+    };
+    const service = new RunService({
+      runRepo,
+      botRepo,
+      workspace,
+      runtime,
+      clock: { now: () => 1000 },
+      ids: { generate: () => "run-ask-1" },
+      conversationMessages: {
+        recordBotReply: () => Effect.void,
+        recordSystemMarker: (_conversationId, content) => {
+          markers.push(content);
+          return Effect.void;
+        },
+      },
+    });
+
+    const conv = asConversationId("123e4567-e89b-12d3-a456-426614174099");
+    const run = await Effect.runPromise(
+      service.startRun({
+        botId: asBotId("bot-1"),
+        prompt: "ask me",
+        conversationId: conv,
+      }),
+    );
+    await Effect.runPromise(
+      runRepo.update({
+        ...run,
+        status: "awaiting_input",
+        pendingFormId: form.id,
+        inputDeadlineAt: 1000 + 60_000,
+        updatedAt: 1001,
+      }),
+    );
+
+    await Effect.runPromise(service.replyToInput(asRunId(run.id), { q0: "bun" }));
+
+    expect(markers).toHaveLength(1);
+    expect(parseAskAnswerMarker(markers[0]!)).toEqual({
+      kind: "ask-answer",
+      question: "Which package manager?",
+      answer: "bun",
+    });
+    expect(markers[0]).toBe(encodeAskAnswerMarker("Which package manager?", "bun"));
   });
 });

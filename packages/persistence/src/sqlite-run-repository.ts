@@ -8,7 +8,7 @@ import type {
   ConversationSessionId,
   TaskId,
 } from "@bebots/domain";
-import { asBotId, asRunId } from "@bebots/domain";
+import { asBotId, asFormId, asRunId } from "@bebots/domain";
 import type { RunRepository } from "@bebots/application";
 import { NotFoundError, RepositoryError } from "@bebots/application";
 import type { SqliteDatabase } from "./database.js";
@@ -29,6 +29,8 @@ interface RunRow {
   conversation_id: string | null;
   conversation_session_id: string | null;
   task_id: string | null;
+  pending_form_id: string | null;
+  input_deadline_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -52,6 +54,8 @@ function rowToRun(row: RunRow): Run {
       ? (row.conversation_session_id as ConversationSessionId)
       : undefined,
     taskId: row.task_id ? (row.task_id as TaskId) : undefined,
+    ...(row.pending_form_id ? { pendingFormId: asFormId(row.pending_form_id) } : {}),
+    ...(row.input_deadline_at != null ? { inputDeadlineAt: row.input_deadline_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   } as Run;
@@ -69,8 +73,8 @@ export class SqliteRunRepository implements RunRepository {
     return Effect.try({
       try: () => {
         db.prepare(
-          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, conversation_id, conversation_session_id, task_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO runs (id, bot_id, trigger_type, prompt, status, session_id, timeout_ms, started_at, ended_at, exit_code, summary, error, conversation_id, conversation_session_id, task_id, pending_form_id, input_deadline_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           run.id,
           run.botId,
@@ -87,6 +91,8 @@ export class SqliteRunRepository implements RunRepository {
           run.conversationId ?? null,
           run.conversationSessionId ?? null,
           run.taskId ?? null,
+          run.pendingFormId ?? null,
+          run.inputDeadlineAt ?? null,
           run.createdAt,
           run.updatedAt,
         );
@@ -148,7 +154,7 @@ export class SqliteRunRepository implements RunRepository {
           const info = db
             .prepare(
               `UPDATE runs
-               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, conversation_id = ?, conversation_session_id = ?, task_id = ?, updated_at = ?
+               SET bot_id = ?, trigger_type = ?, prompt = ?, status = ?, session_id = ?, timeout_ms = ?, started_at = ?, ended_at = ?, exit_code = ?, summary = ?, error = ?, conversation_id = ?, conversation_session_id = ?, task_id = ?, pending_form_id = ?, input_deadline_at = ?, updated_at = ?
                WHERE id = ?`,
             )
             .run(
@@ -166,6 +172,8 @@ export class SqliteRunRepository implements RunRepository {
               run.conversationId ?? null,
               run.conversationSessionId ?? null,
               run.taskId ?? null,
+              run.pendingFormId ?? null,
+              run.inputDeadlineAt ?? null,
               run.updatedAt,
               run.id,
             );

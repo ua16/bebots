@@ -367,6 +367,23 @@ describe("ConversationRunCoordinator.recordBotReply", () => {
   });
 });
 
+describe("ConversationRunCoordinator.recordSystemMarker", () => {
+  it("persists a system marker into the thread", async () => {
+    const env = makeEnv([], makeRuntime());
+    await seedConversation(env, []);
+    await Effect.runPromise(
+      env.coordinator.recordSystemMarker(
+        conversationId,
+        '{"kind":"ask-answer","question":"Q?","answer":"A"}',
+      ),
+    );
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(1);
+    expect(thread[0]?.senderType).toBe("system");
+    expect(thread[0]?.content).toContain("ask-answer");
+  });
+});
+
 describe("ConversationRunCoordinator.deleteConversation", () => {
   it("purges messages, runs and the conversation, then rejects further sends", async () => {
     const env = makeEnv([], makeRuntime());

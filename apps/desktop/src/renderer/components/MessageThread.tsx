@@ -1,4 +1,5 @@
 import type { JSX, RefObject } from "react";
+import { parseAskAnswerMarker } from "@bebots/domain";
 import type { BebotsBot } from "../../shared/preload-api";
 import type { ApiMessage } from "../lib/api-types";
 import { BotAvatar } from "./avatar";
@@ -54,18 +55,34 @@ export function MessageThread({
   return (
     <div className="chat-thread">
       {hasActiveConversation &&
-        messages.map((m) =>
-          m.senderType === "system" ? (
-            <div key={m.id} className="message message-system">
-              <span className="message-content">{m.content}</span>
-              <time className="message-time">
-                {new Date(m.createdAt).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-            </div>
-          ) : (
+        messages.map((m) => {
+          if (m.senderType === "system") {
+            const ask = parseAskAnswerMarker(m.content);
+            if (ask !== null) {
+              return (
+                <div
+                  key={m.id}
+                  className="message message-ask-marker"
+                  data-testid="ask-answer-marker"
+                >
+                  <span className="ask-marker-question">{ask.question}</span>{" "}
+                  <strong className="ask-marker-answer">{ask.answer}</strong>
+                </div>
+              );
+            }
+            return (
+              <div key={m.id} className="message message-system">
+                <span className="message-content">{m.content}</span>
+                <time className="message-time">
+                  {new Date(m.createdAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+              </div>
+            );
+          }
+          return (
             <div
               key={m.id}
               className={`message ${m.senderType === "human" ? "message-human" : "message-bot"}`}
@@ -91,8 +108,8 @@ export function MessageThread({
                 })}
               </time>
             </div>
-          ),
-        )}
+          );
+        })}
       {hasActiveConversation && pendingReply && <div className="typing">{typingLabel}</div>}
       {threadNotice !== null && <div className="thread-notice">{threadNotice}</div>}
       {!hasActiveConversation && (

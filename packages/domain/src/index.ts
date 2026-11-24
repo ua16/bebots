@@ -1,6 +1,9 @@
 export * from "./avatar.js";
+export * from "./form.js";
 export * from "./schedule.js";
 export * from "./schemas.js";
+
+import type { FormId, PendingRunInput } from "./form.js";
 
 import type { BotAvatar } from "./avatar.js";
 
@@ -127,6 +130,7 @@ export function asActivityId(value: string): ActivityId {
 export const RUN_STATUSES = [
   "queued",
   "running",
+  "awaiting_input",
   "succeeded",
   "failed",
   "cancelled",
@@ -134,6 +138,27 @@ export const RUN_STATUSES = [
 ] as const;
 
 export type RunStatus = (typeof RUN_STATUSES)[number];
+
+const RUN_TRANSITIONS: Readonly<Record<RunStatus, readonly RunStatus[]>> = {
+  queued: ["running", "cancelled"],
+  running: ["awaiting_input", "succeeded", "failed", "cancelled", "timed_out"],
+  awaiting_input: ["running", "cancelled"],
+  succeeded: [],
+  failed: [],
+  cancelled: [],
+  timed_out: [],
+};
+
+export function canTransitionRun(from: RunStatus, to: RunStatus): boolean {
+  return RUN_TRANSITIONS[from].includes(to);
+}
+
+/** Statuses that hold an in-flight concurrency slot. */
+export const ACTIVE_RUN_STATUSES = ["queued", "running", "awaiting_input"] as const;
+
+export function isActiveRunStatus(status: RunStatus): boolean {
+  return (ACTIVE_RUN_STATUSES as readonly string[]).includes(status);
+}
 
 export const RUN_TRIGGERS = ["manual", "schedule", "message", "task", "api"] as const;
 
@@ -225,6 +250,8 @@ export interface Run {
   readonly conversationSessionId?: ConversationSessionId;
   readonly taskId?: TaskId;
   readonly timeoutMs: number;
+  readonly pendingFormId?: FormId;
+  readonly inputDeadlineAt?: number;
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly exitCode?: number;
@@ -232,6 +259,12 @@ export interface Run {
   readonly error?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+}
+
+export function pendingInputOf(run: Run): PendingRunInput | null {
+  if (run.status !== "awaiting_input" || run.pendingFormId === undefined) return null;
+  if (run.inputDeadlineAt === undefined) return null;
+  return { formId: run.pendingFormId, inputDeadlineAt: run.inputDeadlineAt };
 }
 
 export const TASK_STATUSES = [

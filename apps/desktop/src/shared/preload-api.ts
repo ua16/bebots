@@ -76,7 +76,32 @@ export interface BebotsPreloadApi {
     readonly cancel: (id: string) => Promise<BebotsRun | null>;
     readonly events: (id: string) => Promise<readonly BebotsRunEvent[]>;
     readonly await: (id: string, timeoutMs?: number) => Promise<BebotsRun | null>;
+    readonly getInput: (id: string) => Promise<BebotsForm>;
+    readonly replyInput: (
+      id: string,
+      answers: Record<string, string | number | boolean | string[]>,
+    ) => Promise<BebotsRun>;
+    readonly dismissInput: (id: string) => Promise<BebotsRun>;
   };
+}
+
+export interface BebotsForm {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly title: string;
+  readonly fields: readonly {
+    readonly key: string;
+    readonly type: string;
+    readonly title?: string;
+    readonly description?: string;
+    readonly custom?: boolean;
+    readonly options?: readonly {
+      readonly value: string;
+      readonly label: string;
+      readonly description?: string;
+    }[];
+    readonly url?: string;
+  }[];
 }
 
 export interface BebotsRun {
@@ -87,6 +112,8 @@ export interface BebotsRun {
   readonly status: string;
   readonly sessionId?: string;
   readonly timeoutMs: number;
+  readonly pendingFormId?: string;
+  readonly inputDeadlineAt?: number;
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly exitCode?: number;

@@ -32,6 +32,9 @@ const api: BebotsPreloadApi = {
     cancel: (id) => ipcRenderer.invoke("bebots:runs:cancel", id),
     events: (id) => ipcRenderer.invoke("bebots:runs:events", id),
     await: (id, timeoutMs) => ipcRenderer.invoke("bebots:runs:await", id, timeoutMs),
+    getInput: (id) => ipcRenderer.invoke("bebots:runs:getInput", id),
+    replyInput: (id, answers) => ipcRenderer.invoke("bebots:runs:replyInput", id, answers),
+    dismissInput: (id) => ipcRenderer.invoke("bebots:runs:dismissInput", id),
   },
 };
 

@@ -179,12 +179,14 @@ async function setupBotService(): Promise<void> {
   runtimeInstance = runtime;
   // Run finalization posts completed conversation runs into the thread as bot
   // replies through the coordinator (declared just below) — PLAN §12 M3:
-  // regardless of which path started the run. The annotated recordBotReply
-  // closure resolves the coordinator after construction, so the two services
-  // can reference each other without a mutable setter.
+  // regardless of which path started the run. The annotated closures resolve
+  // the coordinator after construction, so the two services can reference
+  // each other without a mutable setter.
   const conversationReplyRecorder: ConversationReplyRecorder = {
     recordBotReply: (conversationId, botId, content) =>
       conversationCoordinator.recordBotReply(conversationId, botId, content),
+    recordSystemMarker: (conversationId, content) =>
+      conversationCoordinator.recordSystemMarker(conversationId, content),
   };
   const runService = new RunService({
     runRepo,
@@ -518,6 +520,18 @@ async function setupBotService(): Promise<void> {
     return Effect.runPromise(
       runService.awaitRun(asRunId(id as string), timeoutMs as number | undefined),
     );
+  });
+  ipcMain.handle("bebots:runs:getInput", async (_event, id: string) => {
+    return Effect.runPromise(runService.getInput(asRunId(id as string)));
+  });
+  ipcMain.handle(
+    "bebots:runs:replyInput",
+    async (_event, id: string, answers: Record<string, string | number | boolean | string[]>) => {
+      return Effect.runPromise(runService.replyToInput(asRunId(id as string), answers));
+    },
+  );
+  ipcMain.handle("bebots:runs:dismissInput", async (_event, id: string) => {
+    return Effect.runPromise(runService.dismissInput(asRunId(id as string)));
   });
 
   // HTTP server
