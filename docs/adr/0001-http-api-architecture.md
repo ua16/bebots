@@ -2,7 +2,7 @@
 
 Date: 2026-10-30
 Status: Accepted
-Related: [REFACTOR-PLAN.md](../../REFACTOR-PLAN.md), GitHub issues #12, #31
+Related: GitHub issues #12, #31 (historical; may no longer exist post-rewrite)
 
 ## Context
 
