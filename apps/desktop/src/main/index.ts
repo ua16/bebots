@@ -680,14 +680,19 @@ async function setupBotService(): Promise<void> {
           ...(buf.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: buf } : {}),
         });
         const response = await mcpHandle!.handleRequest(request);
-        await writeWebResponse(req, res, response, {
-          logBody: showMcpLogs
-            ? (status, body) => {
-                console.log(`[mcp] <-- ${status} ${pathname}`);
-                console.log(`[mcp] response: ${formatMcpJson(body.toString("utf8"))}`);
+        await writeWebResponse(
+          req,
+          res,
+          response,
+          showMcpLogs
+            ? {
+                logBody: (status, body) => {
+                  console.log(`[mcp] <-- ${status} ${pathname}`);
+                  console.log(`[mcp] response: ${formatMcpJson(body.toString("utf8"))}`);
+                },
               }
             : undefined,
-        });
+        );
         return;
       }
 

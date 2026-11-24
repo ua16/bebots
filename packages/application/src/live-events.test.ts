@@ -106,7 +106,9 @@ describe("publishing repository wrappers", () => {
       deleteByEntityIds: () => Effect.succeed(0),
     };
     const repo = withLiveActivityPublishing(base, bus);
-    const events = await collectNext(bus, 1, () => Effect.runPromise(repo.create(created)));
+    const events = await collectNext(bus, 1, async () => {
+      await Effect.runPromise(repo.create(created));
+    });
     expect(events[0]?.kind).toBe("activity");
     if (events[0]?.kind === "activity") {
       expect(events[0].activity.id).toBe("a1");
