@@ -23,6 +23,7 @@ import {
   ScheduleService,
   ActivityService,
   AppSettingsService,
+  LiveEventBus,
   NotFoundError,
   ValidationError,
 } from "@bebots/application";
@@ -37,6 +38,7 @@ export interface ApiDeps {
   readonly taskService: TaskService;
   readonly scheduleService: ScheduleService;
   readonly activityService: ActivityService;
+  readonly liveEvents: LiveEventBus;
   readonly settingsService: AppSettingsService;
   readonly token: string;
   readonly runtime: {
@@ -555,6 +557,22 @@ export const makeRoutes = (deps: ApiDeps) => {
     }),
   );
 
+  const eventsLayer = HttpApiBuilder.group(
+    Api,
+    "events",
+    Effect.fn(function* (handlers) {
+      yield* Effect.void;
+      return handlers.handleAll({
+        subscribeEvents: ({ query }) => {
+          const runId = query?.runId;
+          return Effect.succeed(
+            deps.liveEvents.stream(runId ? { runId } : undefined),
+          );
+        },
+      });
+    }),
+  );
+
   const controlLayer = HttpApiBuilder.group(
     Api,
     "control",
@@ -612,6 +630,7 @@ export const makeRoutes = (deps: ApiDeps) => {
     tasksLayer,
     schedulesLayer,
     activityLayer,
+    eventsLayer,
     controlLayer,
     notesLayer,
   );

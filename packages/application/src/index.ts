@@ -10,3 +10,4 @@ export * from "./conversation-run-coordinator.js";
 export * from "./task-service.js";
 export * from "./schedule-service.js";
 export * from "./activity-service.js";
+export * from "./live-events.js";

@@ -22,7 +22,10 @@ export class FakeRuntime {
     return Effect.void;
   }
   streamEvents() {
-    return Stream.empty;
+    return Stream.fromIterable([
+      { _tag: "started" as const, at: new Date() },
+      { _tag: "completed" as const, summary: "ok" },
+    ]);
   }
   getResult() {
     return Effect.succeed({ exitCode: 0, summary: "ok", sessionId: "sess-1" });

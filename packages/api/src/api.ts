@@ -526,6 +526,51 @@ const activity = HttpApiGroup.make("activity").add(
   }),
 );
 
+const LiveActivityPayload = Schema.Struct({
+  id: Schema.String,
+  type: Schema.String,
+  entityType: Schema.String,
+  entityId: Schema.String,
+  actorId: Schema.NullOr(Schema.String),
+  payload: Schema.optional(Schema.Unknown),
+  createdAt: Schema.Number,
+});
+
+const LiveEventPayload = Schema.Union([
+  Schema.Struct({
+    v: Schema.Literal(1),
+    id: Schema.String,
+    at: Schema.Number,
+    kind: Schema.Literal("activity"),
+    activity: LiveActivityPayload,
+  }),
+  Schema.Struct({
+    v: Schema.Literal(1),
+    id: Schema.String,
+    at: Schema.Number,
+    kind: Schema.Literal("run.event"),
+    runId: Schema.String,
+    event: Schema.Unknown,
+  }),
+  Schema.Struct({
+    v: Schema.Literal(1),
+    id: Schema.String,
+    at: Schema.Number,
+    kind: Schema.Literal("run.updated"),
+    run: Schema.Unknown,
+  }),
+]);
+
+const events = HttpApiGroup.make("events").add(
+  HttpApiEndpoint.get("subscribeEvents", "/api/v1/events", {
+    query: Schema.Struct({
+      runId: Schema.optional(Schema.String),
+    }),
+    success: HttpApiSchema.StreamSse({ data: LiveEventPayload }),
+    error: ApiError,
+  }),
+);
+
 const control = HttpApiGroup.make("control").add(
   HttpApiEndpoint.get("controlStatus", "/api/v1/control/status", { success: U, error: ApiError }),
   HttpApiEndpoint.post("controlPause", "/api/v1/control/pause", { success: U, error: ApiError }),
@@ -556,6 +601,7 @@ export class Api extends HttpApi.make("bebots")
     tasks,
     schedules,
     activity,
+    events,
     control,
     notes,
   )
