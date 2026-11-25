@@ -19,11 +19,7 @@ import type {
 } from "./repositories.js";
 
 export type LiveEventKind =
-  | "activity"
-  | "run.event"
-  | "run.updated"
-  | "conversation.updated"
-  | "schedule.updated";
+  "activity" | "run.event" | "run.updated" | "conversation.updated" | "schedule.updated";
 
 export type LiveEvent =
   | {
@@ -196,9 +192,9 @@ export function withLiveActivityPublishing(
 ): ActivityRepository {
   return {
     create: (event) =>
-      repo.create(event).pipe(
-        Effect.tap((created) => Effect.sync(() => bus.publish(activityLiveEvent(created)))),
-      ),
+      repo
+        .create(event)
+        .pipe(Effect.tap((created) => Effect.sync(() => bus.publish(activityLiveEvent(created))))),
     findAll: (options) => repo.findAll(options),
     deleteByEntityIds: (entityType, entityIds) => repo.deleteByEntityIds(entityType, entityIds),
   };
@@ -208,19 +204,23 @@ export function withLiveActivityPublishing(
 export function withLiveRunPublishing(repo: RunRepository, bus: LiveEventBus): RunRepository {
   return {
     create: (run) =>
-      repo.create(run).pipe(
-        Effect.tap((created) => Effect.sync(() => bus.publish(runUpdatedLiveEvent(created)))),
-      ),
+      repo
+        .create(run)
+        .pipe(
+          Effect.tap((created) => Effect.sync(() => bus.publish(runUpdatedLiveEvent(created)))),
+        ),
     findById: (id) => repo.findById(id),
     findAll: (options) => repo.findAll(options),
     update: (run) =>
-      repo.update(run).pipe(
-        Effect.tap((updated) => Effect.sync(() => bus.publish(runUpdatedLiveEvent(updated)))),
-      ),
+      repo
+        .update(run)
+        .pipe(
+          Effect.tap((updated) => Effect.sync(() => bus.publish(runUpdatedLiveEvent(updated)))),
+        ),
     appendEvent: (runId, event) =>
-      repo.appendEvent(runId, event).pipe(
-        Effect.tap(() => Effect.sync(() => bus.publish(runEventLiveEvent(runId, event)))),
-      ),
+      repo
+        .appendEvent(runId, event)
+        .pipe(Effect.tap(() => Effect.sync(() => bus.publish(runEventLiveEvent(runId, event))))),
     listEvents: (runId) => repo.listEvents(runId),
     deleteByBot: (botId) => repo.deleteByBot(botId),
     deleteByConversation: (conversationId) => repo.deleteByConversation(conversationId),
@@ -234,25 +234,31 @@ export function withLiveConversationPublishing(
 ): ConversationRepository {
   return {
     create: (conversation) =>
-      repo.create(conversation).pipe(
-        Effect.tap((created: Conversation) =>
-          Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(created.id, "created"))),
+      repo
+        .create(conversation)
+        .pipe(
+          Effect.tap((created: Conversation) =>
+            Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(created.id, "created"))),
+          ),
         ),
-      ),
     findById: (id) => repo.findById(id),
     findAll: (options) => repo.findAll(options),
     update: (conversation) =>
-      repo.update(conversation).pipe(
-        Effect.tap((updated: Conversation) =>
-          Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(updated.id, "updated"))),
+      repo
+        .update(conversation)
+        .pipe(
+          Effect.tap((updated: Conversation) =>
+            Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(updated.id, "updated"))),
+          ),
         ),
-      ),
     delete: (id) =>
-      repo.delete(id).pipe(
-        Effect.tap(() =>
-          Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(id, "deleted"))),
+      repo
+        .delete(id)
+        .pipe(
+          Effect.tap(() =>
+            Effect.sync(() => bus.publish(conversationUpdatedLiveEvent(id, "deleted"))),
+          ),
         ),
-      ),
   };
 }
 
@@ -263,13 +269,15 @@ export function withLiveMessagePublishing(
 ): MessageRepository {
   return {
     create: (message) =>
-      repo.create(message).pipe(
-        Effect.tap((created: Message) =>
-          Effect.sync(() =>
-            bus.publish(conversationUpdatedLiveEvent(created.conversationId, "message")),
+      repo
+        .create(message)
+        .pipe(
+          Effect.tap((created: Message) =>
+            Effect.sync(() =>
+              bus.publish(conversationUpdatedLiveEvent(created.conversationId, "message")),
+            ),
           ),
         ),
-      ),
     findById: (id) => repo.findById(id),
     findByConversation: (conversationId, options) =>
       repo.findByConversation(conversationId, options),

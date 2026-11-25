@@ -297,10 +297,7 @@ async function setupBotService(): Promise<void> {
   // Durable schedules (PLAN §9): the scheduler owns due-occurrence recording
   // and durable run enqueueing; runs carry trigger type "schedule" and are
   // attributed back to their occurrence via the run-result hook.
-  const scheduleRepo = withLiveSchedulePublishing(
-    createSqliteScheduleRepository(db),
-    liveEvents,
-  );
+  const scheduleRepo = withLiveSchedulePublishing(createSqliteScheduleRepository(db), liveEvents);
   const scheduleService = new ScheduleService({
     scheduleRepo,
     botRepo: repo,

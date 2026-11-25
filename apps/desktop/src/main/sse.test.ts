@@ -89,9 +89,8 @@ describe("SSE live events API", () => {
     expect(streamRes.status).toBe(200);
     expect(streamRes.headers.get("content-type") ?? "").toContain("text/event-stream");
 
-    const waiting = readSseUntil(
-      streamRes,
-      (events) => events.some((e) => (e as { kind?: string }).kind === "activity"),
+    const waiting = readSseUntil(streamRes, (events) =>
+      events.some((e) => (e as { kind?: string }).kind === "activity"),
     );
     // Let the bridge subscribe to the bus before publishing.
     await new Promise((r) => setTimeout(r, 50));
@@ -161,18 +160,21 @@ describe("SSE live events API", () => {
     });
     const bot = await createBot(app, "Filter Bot");
 
-    const runA = (
-      await api(app, "POST", `/api/v1/bots/${bot.id}/runs`, { prompt: "a" })
-    ).body as { id: string };
-    const runB = (
-      await api(app, "POST", `/api/v1/bots/${bot.id}/runs`, { prompt: "b" })
-    ).body as { id: string };
+    const runA = (await api(app, "POST", `/api/v1/bots/${bot.id}/runs`, { prompt: "a" })).body as {
+      id: string;
+    };
+    const runB = (await api(app, "POST", `/api/v1/bots/${bot.id}/runs`, { prompt: "b" })).body as {
+      id: string;
+    };
 
     const controller = new AbortController();
-    const streamRes = await fetch(`${app.base}/api/v1/events?runId=${encodeURIComponent(runA.id)}`, {
-      headers: { Authorization: `Bearer ${app.token}`, Accept: "text/event-stream" },
-      signal: controller.signal,
-    });
+    const streamRes = await fetch(
+      `${app.base}/api/v1/events?runId=${encodeURIComponent(runA.id)}`,
+      {
+        headers: { Authorization: `Bearer ${app.token}`, Accept: "text/event-stream" },
+        signal: controller.signal,
+      },
+    );
     expect(streamRes.status).toBe(200);
 
     const waiting = readSseUntil(streamRes, (events) =>

@@ -565,9 +565,7 @@ export const makeRoutes = (deps: ApiDeps) => {
       return handlers.handleAll({
         subscribeEvents: ({ query }) => {
           const runId = query?.runId;
-          return Effect.succeed(
-            deps.liveEvents.stream(runId ? { runId } : undefined),
-          );
+          return Effect.succeed(deps.liveEvents.stream(runId ? { runId } : undefined));
         },
       });
     }),
