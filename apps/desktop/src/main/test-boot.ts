@@ -1,5 +1,4 @@
-// Shared live-app boot fixture for the main-process HTTP/MCP suites (PR 5 of
-// the API layer foundation refactor; see REFACTOR-PLAN.md).
+// Shared live-app boot fixture for the main-process HTTP/MCP suites.
 //
 // Each suite used to hand-copy the same ~50-line block: temp user-data dir,
 // `electron` module mock (with a `BrowserWindow as unknown as …` cast), a

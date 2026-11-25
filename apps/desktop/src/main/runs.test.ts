@@ -143,7 +143,7 @@ describe("runs IPC and HTTP API", () => {
     expect(notFound.status).toBe(404);
 
     const badBody = await fetch(`${base}/api/v1/bots`, { method: "POST", body: "{" });
-    // Malformed JSON body now maps to 400 (named exception; see REFACTOR-PLAN.md contract gate).
+    // Malformed JSON body maps to 400 (Effect Schema validation; formerly 500).
     expect(badBody.status).toBe(400);
   });
 
