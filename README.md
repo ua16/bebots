@@ -18,8 +18,6 @@
   <a href="#license">License</a>
 </p>
 
----
-
 ## What?
 
 bebots is a meta-harness that lets you use your existing subscriptions to create
