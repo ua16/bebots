@@ -29,10 +29,12 @@ you use the subscriptions you already pay for.
 
 Each bot lives in its own directory and set up so harnesses can treat it like a regular project.
 
+Note : This project is very early days and likely to change significantly.
+
 ## Why?
 
 - Grok Bot is a really great tool but hides the finer details of the models and harnesses. bebots
-gives you back that control.
+  gives you back that control.
 
 ## How different?
 
@@ -40,7 +42,6 @@ This _is_ another open source alternative to Grok Bot. However bebots plans to d
 
 - Use 3rd party harnesses instead of creating a new one
 - That's it (for now)
-
 
 ## Quick start
 
