@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/readme/bebots-logo.webp" alt="bebots" width="520" />
+  <img src=".github/readme/bebots-logo.webp" alt="bebots" width="260" />
 </p>
 
 <p align="center">
