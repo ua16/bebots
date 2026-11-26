@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, session } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Effect, Layer } from "effect";
 import {
   openDatabase,
@@ -28,6 +28,12 @@ import {
   TaskService,
   ScheduleService,
   ActivityService,
+  LiveEventBus,
+  withLiveActivityPublishing,
+  withLiveConversationPublishing,
+  withLiveMessagePublishing,
+  withLiveRunPublishing,
+  withLiveSchedulePublishing,
 } from "@bebots/application";
 import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
@@ -79,6 +85,71 @@ function formatMcpJson(text: string): string {
   return out || "(empty)";
 }
 
+/** Pipe a Fetch Response to Node's ServerResponse, streaming bodies (SSE). */
+async function writeWebResponse(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  response: Response,
+  options?: {
+    readonly logBody?: (status: number, body: Buffer) => void;
+  },
+): Promise<void> {
+  res.statusCode = response.status;
+  response.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "transfer-encoding") return;
+    res.setHeader(key, value);
+  });
+
+  if (!response.body) {
+    options?.logBody?.(response.status, Buffer.alloc(0));
+    res.end();
+    return;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const isEventStream = contentType.includes("text/event-stream");
+
+  // Buffered JSON/MCP responses keep the previous arrayBuffer path (Effect's
+  // web body does not always signal done when re-piped through node:http).
+  if (!isEventStream || options?.logBody) {
+    const ab = await response.arrayBuffer();
+    const buf = Buffer.from(ab);
+    options?.logBody?.(response.status, buf);
+    res.end(buf);
+    return;
+  }
+
+  // SSE: flush headers before the first event so the client can connect while
+  // the stream stays open, then pipe chunks as they arrive.
+  res.flushHeaders();
+
+  const reader = response.body.getReader();
+  // Listen on the response, not the request: IncomingMessage "close" fires when
+  // the request body ends (normal for GET), which would cancel the SSE stream
+  // before any events are published.
+  const onClose = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  res.on("close", onClose);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (res.writableEnded || res.destroyed) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      const chunk = Buffer.from(value);
+      if (!res.write(chunk)) {
+        await new Promise<void>((resolve) => res.once("drain", resolve));
+      }
+    }
+  } finally {
+    res.off("close", onClose);
+    if (!res.writableEnded) res.end();
+  }
+}
+
 /** Scheduler tick cadence; overridable via `BEBOTS_SCHEDULE_TICK_MS` (tests). */
 function scheduleTickMs(): number {
   const raw = Number(process.env.BEBOTS_SCHEDULE_TICK_MS);
@@ -98,12 +169,12 @@ async function setupBotService(): Promise<void> {
   const db = await openDatabase(join(userData, "app.sqlite"));
   migrate(db);
   const repo = createSqliteBotRepository(db);
-  const runRepo = createSqliteRunRepository(db);
+  const rawRunRepo = createSqliteRunRepository(db);
   // Reconcile stale running runs from previous crash/restart.
-  const stale = await Effect.runPromise(runRepo.findAll({ status: "running" }));
+  const stale = await Effect.runPromise(rawRunRepo.findAll({ status: "running" }));
   for (const r of stale) {
     await Effect.runPromise(
-      runRepo.update({
+      rawRunRepo.update({
         ...r,
         status: "failed",
         error: "Application restarted during run",
@@ -115,10 +186,10 @@ async function setupBotService(): Promise<void> {
   // Runs persisted as queued but never started (crash between enqueue and
   // launch) get the same reconciliation; their schedule occurrences then
   // resolve through the scheduler's stale-occurrence recovery.
-  const staleQueued = await Effect.runPromise(runRepo.findAll({ status: "queued" }));
+  const staleQueued = await Effect.runPromise(rawRunRepo.findAll({ status: "queued" }));
   for (const r of staleQueued) {
     await Effect.runPromise(
-      runRepo.update({
+      rawRunRepo.update({
         ...r,
         status: "failed",
         error: "Application restarted before the run started",
@@ -127,16 +198,21 @@ async function setupBotService(): Promise<void> {
       }),
     );
   }
+  const liveEvents = new LiveEventBus();
+  const runRepo = withLiveRunPublishing(rawRunRepo, liveEvents);
   const workspace = createNodeBotWorkspace({ root: userData });
   const settingsRepo = createSqliteSettingsRepository(db);
   const settingsService = new AppSettingsService(settingsRepo);
 
-  const conversationRepo = createSqliteConversationRepository(db);
-  const messageRepo = createSqliteMessageRepository(db);
+  const conversationRepo = withLiveConversationPublishing(
+    createSqliteConversationRepository(db),
+    liveEvents,
+  );
+  const messageRepo = withLiveMessagePublishing(createSqliteMessageRepository(db), liveEvents);
   const conversationSessionRepo = createSqliteConversationSessionRepository(db);
   const fileIndexRepo = createSqliteFileIndexRepository(db);
   const taskRepo = createSqliteTaskRepository(db);
-  const activityRepo = createSqliteActivityRepository(db);
+  const activityRepo = withLiveActivityPublishing(createSqliteActivityRepository(db), liveEvents);
 
   const conversationService = new ConversationService({
     conversationRepo,
@@ -221,7 +297,7 @@ async function setupBotService(): Promise<void> {
   // Durable schedules (PLAN §9): the scheduler owns due-occurrence recording
   // and durable run enqueueing; runs carry trigger type "schedule" and are
   // attributed back to their occurrence via the run-result hook.
-  const scheduleRepo = createSqliteScheduleRepository(db);
+  const scheduleRepo = withLiveSchedulePublishing(createSqliteScheduleRepository(db), liveEvents);
   const scheduleService = new ScheduleService({
     scheduleRepo,
     botRepo: repo,
@@ -545,6 +621,7 @@ async function setupBotService(): Promise<void> {
     taskService,
     scheduleService,
     activityService,
+    liveEvents,
     settingsService,
     token,
     runtime: runtimeInstance,
@@ -566,7 +643,7 @@ async function setupBotService(): Promise<void> {
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type, traceparent, tracestate, b3",
+        "Authorization, Content-Type, Last-Event-ID, traceparent, tracestate, b3",
       );
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -600,14 +677,19 @@ async function setupBotService(): Promise<void> {
           ...(buf.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: buf } : {}),
         });
         const response = await mcpHandle!.handleRequest(request);
-        res.statusCode = response.status;
-        response.headers.forEach((value: string, key: string) => res.setHeader(key, value));
-        const ab = await response.arrayBuffer();
-        if (showMcpLogs) {
-          console.log(`[mcp] <-- ${response.status} ${pathname}`);
-          console.log(`[mcp] response: ${formatMcpJson(Buffer.from(ab).toString("utf8"))}`);
-        }
-        res.end(Buffer.from(ab));
+        await writeWebResponse(
+          req,
+          res,
+          response,
+          showMcpLogs
+            ? {
+                logBody: (status, body) => {
+                  console.log(`[mcp] <-- ${status} ${pathname}`);
+                  console.log(`[mcp] response: ${formatMcpJson(body.toString("utf8"))}`);
+                },
+              }
+            : undefined,
+        );
         return;
       }
 
@@ -630,14 +712,15 @@ async function setupBotService(): Promise<void> {
         ...(hasBody ? { body: bodyBuf } : {}),
       });
       const response = await webHandler.handler(request);
-      res.statusCode = response.status;
-      response.headers.forEach((value: string, key: string) => res.setHeader(key, value));
-      const ab = await response.arrayBuffer();
-      res.end(Buffer.from(ab));
+      await writeWebResponse(req, res, response);
     } catch (e) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      } else if (!res.writableEnded) {
+        res.end();
+      }
     }
   });
 

@@ -11,6 +11,7 @@ import type {
   ApiSchedule,
   ApiScheduleOccurrence,
 } from "./lib/api-types";
+import { subscribeLiveEvents, type LiveEvent } from "./lib/live-events";
 import {
   appDefaultToSelection,
   botModelToSelection,
@@ -122,6 +123,11 @@ export function App() {
   const [userInputBusy, setUserInputBusy] = useState(false);
   const [threadNotice, setThreadNotice] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const scheduleHistoryIdRef = useRef<string | null>(null);
+  const runWatchersRef = useRef(
+    new Map<string, (run: Extract<LiveEvent, { kind: "run.updated" }>["run"]) => void>(),
+  );
   const threadEndRef = useRef<HTMLDivElement | null>(null);
 
   const bebots = window.bebots;
@@ -182,14 +188,13 @@ export function App() {
     void refreshConversations();
   }, [refreshConversations]);
 
-  // Conversations can also be created by bots via MCP (send_message races and
-  // scheduled runs route output into threads the user never opened); poll so
-  // new threads appear without user action.
   useEffect(() => {
-    if (!endpoint) return;
-    const interval = setInterval(() => void refreshConversations(), 60_000);
-    return () => clearInterval(interval);
-  }, [endpoint, refreshConversations]);
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    scheduleHistoryIdRef.current = scheduleHistory?.id ?? null;
+  }, [scheduleHistory?.id]);
 
   const refreshMessages = async (conversationId: string) => {
     if (!endpoint) return;
@@ -249,8 +254,8 @@ export function App() {
   };
 
   /**
-   * Wait for a run via the preload bridge (no HTTP spam). Branches when the
-   * run needs input or reaches a terminal status.
+   * Wait for a run via live SSE (`run.updated`). Branches when the run needs
+   * input or reaches a terminal status.
    */
   const watchRunForInput = async (
     runId: string,
@@ -258,36 +263,47 @@ export function App() {
     afterCreatedAt: number,
     endpointAt: ApiEndpoint,
   ) => {
-    const bridge = bebots?.runs;
-    for (let i = 0; i < 120; i++) {
-      if (activeIdRef.current !== conversationId) return;
-      try {
-        const run = bridge
-          ? await bridge.await(runId, 2_000)
-          : ((await apiRequest(endpointAt, `/api/v1/runs/${encodeURIComponent(runId)}`, (c) =>
-              c.runs.getRun({ params: { id: runId } }),
-            )) as { status?: string } | null);
-        if (!run) return;
-        if (run.status === "awaiting_input") {
-          await hydrateUserInput(runId, conversationId, afterCreatedAt, endpointAt);
-          return;
-        }
-        if (
-          run.status === "succeeded" ||
-          run.status === "failed" ||
-          run.status === "cancelled" ||
-          run.status === "timed_out"
-        ) {
-          setPendingReply(false);
-          await refreshMessages(conversationId);
-          return;
-        }
-      } catch {
-        /* keep waiting */
-      }
-    }
-    setPendingReply(false);
-    setThreadNotice("No reply yet — the run may still be in flight or failed. Check run history.");
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        runWatchersRef.current.delete(runId);
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        setPendingReply(false);
+        setThreadNotice(
+          "No reply yet — the run may still be in flight or failed. Check run history.",
+        );
+        finish();
+      }, 240_000);
+
+      runWatchersRef.current.set(runId, (run) => {
+        void (async () => {
+          if (activeIdRef.current !== conversationId) {
+            finish();
+            return;
+          }
+          if (run.status === "awaiting_input") {
+            await hydrateUserInput(runId, conversationId, afterCreatedAt, endpointAt);
+            finish();
+            return;
+          }
+          if (
+            run.status === "succeeded" ||
+            run.status === "failed" ||
+            run.status === "cancelled" ||
+            run.status === "timed_out"
+          ) {
+            setPendingReply(false);
+            await refreshMessages(conversationId);
+            finish();
+          }
+        })();
+      });
+    });
   };
 
   const createConversationWith = async (botId: string | null) => {
@@ -434,31 +450,60 @@ export function App() {
     }
   }, [selected, refreshSchedules]);
 
-  // Schedules can also be created/advanced by bots via MCP, which the
-  // renderer can't see; poll the schedule list and any expanded occurrence
-  // history while a bot is selected.
+  // Live SSE replaces conversation/schedule/message polling and drives
+  // watchRunForInput via run.updated frames.
   useEffect(() => {
-    if (!selected) return;
-    const interval = setInterval(() => {
-      void refreshSchedules();
-      void refreshScheduleHistory();
-    }, 15_000);
-    return () => clearInterval(interval);
-  }, [selected, refreshSchedules, refreshScheduleHistory]);
-
-  // The open thread can receive messages from outside the composer — a
-  // scheduled-run reply lands in its own thread whenever the scheduler fires.
-  // Refresh on the same 15s cadence so it appears without user action.
-  useEffect(() => {
-    if (!activeConversationId) return;
-    const interval = setInterval(() => {
-      if (activeIdRef.current === activeConversationId) {
-        void refreshMessages(activeConversationId);
+    if (!endpoint) return;
+    const ac = new AbortController();
+    const onEvent = (event: LiveEvent) => {
+      if (event.kind === "conversation.updated") {
+        void refreshConversations();
+        if (
+          event.reason === "message" &&
+          activeIdRef.current !== null &&
+          event.conversationId === activeIdRef.current
+        ) {
+          void refreshMessages(event.conversationId);
+        }
+        return;
       }
-    }, 15_000);
-    return () => clearInterval(interval);
+      if (event.kind === "schedule.updated") {
+        if (selectedIdRef.current !== null && event.botId === selectedIdRef.current) {
+          void refreshSchedules();
+        }
+        if (scheduleHistoryIdRef.current === event.scheduleId) {
+          void refreshScheduleHistory();
+        }
+        return;
+      }
+      if (event.kind === "activity" && event.activity.entityType === "schedule") {
+        void refreshSchedules();
+        void refreshScheduleHistory();
+        return;
+      }
+      if (event.kind === "run.updated") {
+        const watcher = runWatchersRef.current.get(event.run.id);
+        if (watcher) watcher(event.run);
+        const conversationId = event.run.conversationId;
+        if (
+          conversationId &&
+          activeIdRef.current === conversationId &&
+          (event.run.status === "succeeded" ||
+            event.run.status === "failed" ||
+            event.run.status === "cancelled" ||
+            event.run.status === "timed_out" ||
+            event.run.status === "awaiting_input")
+        ) {
+          void refreshMessages(conversationId);
+        }
+      }
+    };
+    void subscribeLiveEvents(endpoint, onEvent, ac.signal);
+    return () => ac.abort();
+    // refreshMessages is stable enough via activeIdRef; listing deps that
+    // recreate every render would thrash the SSE connection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversationId]);
+  }, [endpoint, refreshConversations, refreshSchedules, refreshScheduleHistory]);
 
   // Load draft when the selected bot changes — not on every bots[] refresh, so
   // autosave updates do not clobber in-progress edits.

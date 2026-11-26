@@ -19,6 +19,32 @@ const bot = {
   updatedAt: 1,
 };
 
+/** Open SSE response; optional `push` enqueues `data:` frames for live-event tests. */
+function openSseStream(): {
+  readonly response: Response;
+  readonly push: (event: unknown) => void;
+} {
+  const encoder = new TextEncoder();
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+    cancel() {
+      controller = null;
+    },
+  });
+  return {
+    response: new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+    push: (event: unknown) => {
+      controller?.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    },
+  };
+}
+
 function installApi(overrides: Partial<BebotsPreloadApi> = {}): BebotsPreloadApi {
   const api = {
     platform: "darwin",
@@ -155,9 +181,11 @@ describe("App", () => {
         }[]
       | undefined = undefined;
     let sent = false;
+    const sse = openSseStream();
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = String(input).replace("http://127.0.0.1:4747", "");
       const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (path === "/api/v1/events") return sse.response;
       if (path === "/api/v1/conversations") {
         if (init?.method === "POST") {
           return ok(
@@ -212,23 +240,37 @@ describe("App", () => {
           ];
           // New contract (issue #18): the reply run is started server-side and
           // its id comes back with the persisted message.
+          queueMicrotask(() => {
+            if (sent && thread && !thread.some((m) => m.id === "m3")) {
+              thread = [
+                ...thread,
+                {
+                  id: "m3",
+                  conversationId: "c1",
+                  senderType: "bot" as const,
+                  content: "here you go",
+                  deliveryState: "delivered" as const,
+                  createdAt: 3,
+                },
+              ];
+            }
+            sse.push({
+              v: 1,
+              id: "e1",
+              at: 3,
+              kind: "run.updated",
+              run: {
+                id: "r1",
+                status: "succeeded",
+                conversationId: "c1",
+                summary: "here you go",
+              },
+            });
+          });
           return ok({ message: thread[thread.length - 1], runId: "r1" }, 201);
         }
-        // After the send, the bot's completed reply run has landed in the
-        // thread — the UI's post-send polling picks it up.
-        if (sent && !thread.some((m) => m.id === "m3")) {
-          thread = [
-            ...thread,
-            {
-              id: "m3",
-              conversationId: "c1",
-              senderType: "bot" as const,
-              content: "here you go",
-              deliveryState: "delivered" as const,
-              createdAt: 3,
-            },
-          ];
-        }
+        // After the send, the bot's completed reply run lands via SSE and
+        // triggers a message refresh (full reply loop, issue #18).
         return ok(thread);
       }
       return ok([]);
@@ -240,8 +282,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByText("Hello chat"));
     expect(await screen.findByText("greetings")).toBeTruthy();
 
-    // Send appends over HTTP, refreshes the thread, and the bot's reply run
-    // result arrives via post-send polling (full reply loop, issue #18).
+    // Send appends over HTTP; the bot reply arrives after run.updated SSE.
     const input = screen.getByPlaceholderText("Message Bot One");
     fireEvent.change(input, { target: { value: "why hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -283,9 +324,11 @@ describe("App", () => {
       apiEndpoint: vi.fn(async () => ({ url: "http://127.0.0.1:4747", token: "tok" })),
     });
     let deleted = false;
+    const sse = openSseStream();
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = String(input).replace("http://127.0.0.1:4747", "");
       const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (path === "/api/v1/events") return sse.response;
       if (path === "/api/v1/conversations") {
         return ok(
           deleted
@@ -496,9 +539,11 @@ describe("App", () => {
       },
     });
     let deleted = false;
+    const sse = openSseStream();
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const path = String(input).replace("http://127.0.0.1:4747", "");
       const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (path === "/api/v1/events") return sse.response;
       if (path === "/api/v1/conversations") return ok([]);
       if (path === "/api/v1/bots/b1" && init?.method === "DELETE") {
         deleted = true;
