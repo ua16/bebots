@@ -27,12 +27,12 @@ bebots is a desktop app for building a **persistent AI workforce** — not anoth
 
 Each bot is a lasting identity: persona, home directory, notes, conversations, tools, and schedules. Bots can message you and each other. The app owns coordination, permissions, and run state; a pluggable runtime (OpenCode today) does the thinking.
 
-| Principle | Meaning |
-| --- | --- |
-| **Local-first** | State and workspaces live on your machine |
-| **API-first** | Desktop UI and external clients share one HTTP API |
+| Principle               | Meaning                                              |
+| ----------------------- | ---------------------------------------------------- |
+| **Local-first**         | State and workspaces live on your machine            |
+| **API-first**           | Desktop UI and external clients share one HTTP API   |
 | **Persistent identity** | Persona and knowledge survive runs and runtime swaps |
-| **Safe by default** | Local bind, explicit permissions, auditable runs |
+| **Safe by default**     | Local bind, explicit permissions, auditable runs     |
 
 ## Quick start
 
@@ -81,14 +81,14 @@ flowchart BT
   desktop --> application
 ```
 
-| Package | Role |
-| --- | --- |
-| `packages/domain` | Entities, IDs, validators |
-| `packages/application` | Use cases + `AgentRuntime` contract |
-| `packages/persistence` | Local storage |
-| `packages/runtime-opencode` | OpenCode adapter |
-| `packages/api` | HTTP API (Effect `HttpApi`) |
-| `apps/desktop` | Electron UI + composition root |
+| Package                     | Role                                |
+| --------------------------- | ----------------------------------- |
+| `packages/domain`           | Entities, IDs, validators           |
+| `packages/application`      | Use cases + `AgentRuntime` contract |
+| `packages/persistence`      | Local storage                       |
+| `packages/runtime-opencode` | OpenCode adapter                    |
+| `packages/api`              | HTTP API (Effect `HttpApi`)         |
+| `apps/desktop`              | Electron UI + composition root      |
 
 See [`docs/architecture.md`](docs/architecture.md) for dependency rules and the runtime adapter contract.
 
@@ -101,12 +101,12 @@ bun run test
 bun run build
 ```
 
-| Script | What it does |
-| --- | --- |
-| `bun run dev` | Desktop app (or headless server) |
-| `bun run typecheck` | Project-wide TypeScript |
-| `bun run lint` / `format` | ESLint / Prettier |
-| `bun run test` | Vitest |
+| Script                    | What it does                     |
+| ------------------------- | -------------------------------- |
+| `bun run dev`             | Desktop app (or headless server) |
+| `bun run typecheck`       | Project-wide TypeScript          |
+| `bun run lint` / `format` | ESLint / Prettier                |
+| `bun run test`            | Vitest                           |
 
 ## License
 
