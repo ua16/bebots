@@ -3,12 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>A local-first hub for persistent AI bots.</strong>
+  <strong>T3 code meets Grok Bot</strong>
 </p>
 
 <p align="center">
-  Create bots with durable personas, private workspaces, and memory.<br />
-  Let them collaborate, run on schedules, and talk to you — all on your machine.
+  Create bots that run on your own machines and use the harnesses you already pay for.
 </p>
 
 <p align="center">
@@ -21,18 +20,27 @@
 
 ---
 
-## What it is
+## What?
 
-bebots is a desktop app for building a **persistent AI workforce** — not another disposable chat window.
+bebots is a meta-harness that lets you use your existing subscriptions to create
+and run your own bots. It aims to give you as much as freedom as possible to
+manage and run them on your own hardware. It integrates directly with provider harnesses so
+you use the subscriptions you already pay for.
 
-Each bot is a lasting identity: persona, home directory, notes, conversations, tools, and schedules. Bots can message you and each other. The app owns coordination, permissions, and run state; a pluggable runtime (OpenCode today) does the thinking.
+Each bot lives in its own directory and set up so harnesses can treat it like a regular project.
 
-| Principle               | Meaning                                              |
-| ----------------------- | ---------------------------------------------------- |
-| **Local-first**         | State and workspaces live on your machine            |
-| **API-first**           | Desktop UI and external clients share one HTTP API   |
-| **Persistent identity** | Persona and knowledge survive runs and runtime swaps |
-| **Safe by default**     | Local bind, explicit permissions, auditable runs     |
+## Why?
+
+- Grok Bot is a really great tool but hides the finer details of the models and harnesses. bebots
+gives you back that control.
+
+## How different?
+
+This _is_ another open source alternative to Grok Bot. However bebots plans to differ on the following:
+
+- Use 3rd party harnesses instead of creating a new one
+- That's it (for now)
+
 
 ## Quick start
 
