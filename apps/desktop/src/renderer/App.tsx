@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type BotAvatar, formFromWire, isDesktopRenderableForm } from "@bebots/domain";
+import {
+  type AttachmentMarker,
+  type BotAvatar,
+  formFromWire,
+  isDesktopRenderableForm,
+} from "@bebots/domain";
 import type { Form } from "@bebots/domain";
 import { apiRequest } from "./apiClient";
 import type { ApiEndpoint } from "./apiClient";
@@ -21,6 +26,14 @@ import {
 } from "./lib/model-selection";
 import { UNASSIGNED_GROUP_ID, groupSidebarSessions, type SessionGroup } from "./lib/sidebar-groups";
 import { botName } from "./lib/bot-name";
+import {
+  deleteUploadedAttachment,
+  downloadAttachment,
+  type StagedAttachment,
+  type UploadedAttachment,
+  uploadAttachment,
+  validateAttachmentFile,
+} from "./lib/attachments";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadHeader } from "./components/ThreadHeader";
 import { GlobalSettingsOverlay } from "./components/GlobalSettingsOverlay";
@@ -102,6 +115,8 @@ export function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<readonly ApiMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [stagedFiles, setStagedFiles] = useState<readonly StagedAttachment[]>([]);
+  const [sendingMessage, setSendingMessage] = useState(false);
   // Sidebar: bot-group expansion (absent = expanded).
   const [collapsedBots, setCollapsedBots] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState("");
@@ -217,6 +232,7 @@ export function App() {
     setPendingReply(false);
     setPendingUserInput(null);
     setThreadNotice(null);
+    setStagedFiles([]);
     setView("chat");
     if (contextBotId !== undefined) setSelectedId(contextBotId);
     void refreshMessages(id);
@@ -351,10 +367,46 @@ export function App() {
       .finally(() => setUserInputBusy(false));
   };
 
+  const addStagedFiles = useCallback(
+    (files: readonly File[]) => {
+      const accepted: StagedAttachment[] = [];
+      for (const file of files) {
+        const error = validateAttachmentFile(file);
+        if (error) {
+          pushError(error);
+          continue;
+        }
+        accepted.push({ id: crypto.randomUUID(), file, progress: null });
+      }
+      if (accepted.length === 0) return;
+      setStagedFiles((prev) => [...prev, ...accepted]);
+    },
+    [pushError],
+  );
+
+  const removeStagedFile = useCallback((id: string) => {
+    setStagedFiles((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
+  const handleDownloadAttachment = useCallback(
+    (marker: AttachmentMarker) => {
+      if (!endpoint) return;
+      void downloadAttachment(
+        endpoint,
+        marker.conversationId,
+        marker.botId,
+        marker.savedName,
+        marker.fileName,
+      ).catch((e) => pushError(String(e)));
+    },
+    [endpoint, pushError],
+  );
+
   const handleSendMessage = async () => {
-    if (!endpoint || draft.trim().length === 0) return;
+    if (!endpoint || sendingMessage) return;
 
     if (pendingUserInput !== null) {
+      if (draft.trim().length === 0) return;
       if (!formAllowsComposerAnswer(pendingUserInput.form)) return;
       const answers = answersFromComposerDraft(pendingUserInput.form, draft);
       if (answers === null) return;
@@ -362,38 +414,84 @@ export function App() {
       return;
     }
 
-    // Sending from the empty state (a bot is picked but no thread open) starts
-    // a fresh thread with that bot, then posts the message.
+    const text = draft;
+    const batch = stagedFiles;
+    if (text.trim().length === 0 && batch.length === 0) return;
+
+    setSendingMessage(true);
+    const uploaded: UploadedAttachment[] = [];
     let conversationId = activeConversationId;
-    if (conversationId === null) {
-      conversationId = await createConversationWith(selectedId);
-      if (conversationId === null) return;
-      activeIdRef.current = conversationId;
-      setActiveConversationId(conversationId);
-      setMessages([]);
-    }
     try {
+      // Sending from the empty state (a bot is picked but no thread open) starts
+      // a fresh thread with that bot, then posts the message.
+      if (conversationId === null) {
+        conversationId = await createConversationWith(selectedId);
+        if (conversationId === null) return;
+        activeIdRef.current = conversationId;
+        setActiveConversationId(conversationId);
+        setMessages([]);
+      }
+
+      const threadId = conversationId;
+      for (const item of batch) {
+        setStagedFiles((prev) =>
+          prev.map((f) => (f.id === item.id ? { ...f, progress: 0 } : f)),
+        );
+        const stored = await uploadAttachment(endpoint, threadId, item.file, (ratio) => {
+          setStagedFiles((prev) =>
+            prev.map((f) => (f.id === item.id ? { ...f, progress: ratio } : f)),
+          );
+        });
+        uploaded.push(stored);
+      }
+
       const reply = await apiRequest(
         endpoint,
-        `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+        `/api/v1/conversations/${encodeURIComponent(threadId)}/messages`,
         (c) =>
           c.conversations.postMessage({
-            params: { id: conversationId },
-            payload: { content: draft },
+            params: { id: threadId },
+            payload: {
+              content: text,
+              ...(uploaded.length > 0 && {
+                attachments: uploaded.map((a) => ({
+                  savedName: a.savedName,
+                  fileName: a.fileName,
+                  size: a.size,
+                  contentType: a.contentType,
+                  botId: a.botId,
+                })),
+              }),
+            },
           }),
       );
+      const sentIds = new Set(batch.map((b) => b.id));
+      setStagedFiles((prev) => prev.filter((f) => !sentIds.has(f.id)));
       setDraft("");
       mentions.clearMentions();
       setThreadNotice(null);
-      await refreshMessages(conversationId);
+      await refreshMessages(threadId);
       if (reply.runId !== null) {
         setPendingReply(true);
-        void watchRunForInput(reply.runId, conversationId, reply.message.createdAt, endpoint);
+        void watchRunForInput(reply.runId, threadId, reply.message.createdAt, endpoint);
       } else {
         setPendingReply(false);
       }
     } catch (e) {
+      const rollbackId = conversationId;
+      if (rollbackId !== null && uploaded.length > 0) {
+        await Promise.all(
+          uploaded.map((a) =>
+            deleteUploadedAttachment(endpoint, rollbackId, a.botId, a.savedName).catch(
+              () => undefined,
+            ),
+          ),
+        );
+      }
+      setStagedFiles((prev) => prev.map((f) => ({ ...f, progress: null })));
       pushError(String(e));
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -949,7 +1047,19 @@ export function App() {
         {/* ------------------------------------------------------------- */}
         {/* Workspace: header identity bar, thread or bot settings.        */}
         {/* ------------------------------------------------------------- */}
-        <section className="chat-main">
+        <section
+          className="chat-main"
+          onDragOver={(e) => {
+            if (pendingUserInput !== null || view !== "chat") return;
+            e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if (pendingUserInput !== null || view !== "chat") return;
+            e.preventDefault();
+            const files = [...(e.dataTransfer?.files ?? [])];
+            if (files.length > 0) addStagedFiles(files);
+          }}
+        >
           <ThreadHeader
             headerBot={headerBot}
             headerTitle={headerTitle}
@@ -1010,6 +1120,7 @@ export function App() {
                 threadNotice={threadNotice}
                 emptyHintBotName={headerBot?.name ?? "this bot"}
                 endRef={threadEndRef}
+                onDownloadAttachment={handleDownloadAttachment}
               />
               {pendingUserInput !== null && (
                 <UserInputCard
@@ -1052,10 +1163,19 @@ export function App() {
                 onKeyDown={mentions.handleKeyDown}
                 onNewSession={() => void handleNewConversation()}
                 onSubmit={() => void handleSendMessage()}
-                disabled={
+                inputDisabled={
                   userInputBusy ||
                   (pendingUserInput !== null && !formAllowsComposerAnswer(pendingUserInput.form))
                 }
+                sendDisabled={
+                  sendingMessage ||
+                  userInputBusy ||
+                  (pendingUserInput !== null && !formAllowsComposerAnswer(pendingUserInput.form))
+                }
+                stagedFiles={pendingUserInput !== null ? [] : stagedFiles}
+                onAddFiles={pendingUserInput !== null ? undefined : addStagedFiles}
+                onRemoveFile={removeStagedFile}
+                stagingLocked={sendingMessage}
               />
             </>
           )}

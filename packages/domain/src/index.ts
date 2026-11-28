@@ -1,5 +1,7 @@
+export * from "./attachment.js";
 export * from "./avatar.js";
 export * from "./form.js";
+export * from "./prompt-notes.js";
 export * from "./schedule.js";
 export * from "./schemas.js";
 

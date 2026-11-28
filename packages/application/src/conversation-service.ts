@@ -42,6 +42,7 @@ export interface AddMessageInput {
   readonly replyTo?: MessageId;
   readonly threadId?: string;
   readonly deliveryState?: DeliveryState;
+  readonly allowEmpty?: boolean;
 }
 
 export interface ListMessagesOptions {
@@ -180,7 +181,7 @@ export class ConversationService {
     const ids = this.ids;
     return Effect.gen(function* () {
       const content = (input.content ?? "").toString();
-      if (content.trim().length === 0) {
+      if (content.trim().length === 0 && input.allowEmpty !== true) {
         return yield* Effect.fail(
           new ValidationError("content", "Message content cannot be empty"),
         );
@@ -215,6 +216,10 @@ export class ConversationService {
     return Effect.gen(function* () {
       return yield* messageRepo.findById(asMessageId(id));
     });
+  }
+
+  deleteMessage(id: string): Effect.Effect<void, RepositoryError | NotFoundError> {
+    return this.messageRepo.delete(asMessageId(id));
   }
 }
 

@@ -35,4 +35,22 @@ describe("createNodeBotWorkspace", () => {
     await expect(Effect.runPromise(ws.ensureHome(unsafe))).rejects.toThrow();
     expect(() => ws.homePath(unsafe)).toThrow();
   });
+
+  it("stores uniquified received files under the conversation folder", async () => {
+    const ws = createNodeBotWorkspace({ root: dir });
+    const id = asBotId("bot-1");
+    await Effect.runPromise(ws.ensureHome(id));
+    const first = await Effect.runPromise(
+      ws.storeReceivedFile(id, "conv-1", "notes.txt", new TextEncoder().encode("a")),
+    );
+    const second = await Effect.runPromise(
+      ws.storeReceivedFile(id, "conv-1", "notes.txt", new TextEncoder().encode("b")),
+    );
+    expect(first.savedName).toBe("notes.txt");
+    expect(second.savedName).toBe("notes-1.txt");
+    const read = await Effect.runPromise(ws.readReceivedFile(id, "conv-1", "notes-1.txt"));
+    expect(read?.size).toBe(1);
+    await Effect.runPromise(ws.removeReceivedConversationDir(id, "conv-1"));
+    expect(existsSync(join(ws.homePath(id), "receivedFiles", "conv-1"))).toBe(false);
+  });
 });

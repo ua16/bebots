@@ -11,8 +11,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { Dirent } from "node:fs";
-import { join, normalize, relative, resolve } from "node:path";
+import { basename, extname, join, normalize, relative, resolve } from "node:path";
 import type { BotId } from "@bebots/domain";
+import { sanitizeAttachmentFileName } from "@bebots/domain";
 import type { BotWorkspace, FileIndexRepository, FileIndexSearchHit } from "@bebots/application";
 import { WorkspaceError } from "@bebots/application";
 import type { RepositoryError } from "@bebots/application";
@@ -98,7 +99,95 @@ export function createNodeBotWorkspace(options: CreateWorkspaceOptions): BotWork
             ? cause
             : new WorkspaceError("Failed to remove bot home directory", cause),
       }),
+    storeReceivedFile: (botId, conversationId, originalName, bytes) =>
+      Effect.try({
+        try: () => {
+          assertSafeId(botId);
+          assertSafeSegment(conversationId, "conversation id");
+          const dir = join(botsRoot, botId, "receivedFiles", conversationId);
+          ensureDir(dir);
+          const savedName = uniquifyFileName(dir, originalName);
+          writeFileSync(join(dir, savedName), bytes);
+          return { savedName, size: bytes.byteLength };
+        },
+        catch: (cause) =>
+          cause instanceof WorkspaceError
+            ? cause
+            : new WorkspaceError("Failed to store received file", cause),
+      }),
+    readReceivedFile: (botId, conversationId, savedName) =>
+      Effect.try({
+        try: () => {
+          assertSafeId(botId);
+          assertSafeSegment(conversationId, "conversation id");
+          assertSafeSegment(savedName, "file name");
+          const path = join(botsRoot, botId, "receivedFiles", conversationId, savedName);
+          if (!existsSync(path)) return null;
+          const bytes = new Uint8Array(readFileSync(path));
+          return { savedName, size: bytes.byteLength, bytes };
+        },
+        catch: (cause) =>
+          cause instanceof WorkspaceError
+            ? cause
+            : new WorkspaceError("Failed to read received file", cause),
+      }),
+    removeReceivedFile: (botId, conversationId, savedName) =>
+      Effect.try({
+        try: () => {
+          assertSafeId(botId);
+          assertSafeSegment(conversationId, "conversation id");
+          assertSafeSegment(savedName, "file name");
+          const path = join(botsRoot, botId, "receivedFiles", conversationId, savedName);
+          if (!existsSync(path)) return false;
+          rmSync(path, { force: true });
+          return true;
+        },
+        catch: (cause) =>
+          cause instanceof WorkspaceError
+            ? cause
+            : new WorkspaceError("Failed to remove received file", cause),
+      }),
+    removeReceivedConversationDir: (botId, conversationId) =>
+      Effect.try({
+        try: () => {
+          assertSafeId(botId);
+          assertSafeSegment(conversationId, "conversation id");
+          const dir = join(botsRoot, botId, "receivedFiles", conversationId);
+          if (!existsSync(dir)) return;
+          rmSync(dir, { recursive: true, force: true });
+        },
+        catch: (cause) =>
+          cause instanceof WorkspaceError
+            ? cause
+            : new WorkspaceError("Failed to remove received conversation directory", cause),
+      }),
   };
+}
+
+function assertSafeSegment(value: string, label: string): void {
+  if (
+    value.length === 0 ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    throw new WorkspaceError(`Unsafe ${label}`);
+  }
+}
+
+function uniquifyFileName(dir: string, originalName: string): string {
+  const safe = sanitizeAttachmentFileName(originalName);
+  const ext = extname(safe);
+  const stem = basename(safe, ext);
+  let candidate = safe;
+  let n = 1;
+  while (existsSync(join(dir, candidate))) {
+    candidate = `${stem}-${n}${ext}`;
+    n += 1;
+  }
+  return candidate;
 }
 
 // -----------------------------------------------------------------------------

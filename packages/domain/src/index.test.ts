@@ -10,6 +10,12 @@ import {
   encodeAskAnswerMarker,
   parseAskAnswerMarker,
   askAnswerMarkersFromForm,
+  appendPromptNotes,
+  attachmentPromptNote,
+  attachmentRelativePath,
+  encodeAttachmentMarker,
+  parseAttachmentMarker,
+  sanitizeAttachmentFileName,
 } from "./index";
 import type { Form } from "./index";
 
@@ -185,5 +191,46 @@ describe("ask answer markers", () => {
     expect(askAnswerMarkersFromForm(form, { q0: "pnpm" })).toEqual([
       { kind: "ask-answer", question: "Which package manager?", answer: "pnpm" },
     ]);
+  });
+});
+
+describe("prompt notes", () => {
+  it("appends notes below the prompt body", () => {
+    expect(appendPromptNotes("hello", ["note-a", "note-b"])).toBe("hello\n\nnote-a\nnote-b");
+    expect(appendPromptNotes("", ["only"])).toBe("only");
+    expect(appendPromptNotes("keep", [])).toBe("keep");
+  });
+});
+
+describe("attachment markers", () => {
+  it("round-trips encode/parse", () => {
+    const encoded = encodeAttachmentMarker({
+      fileName: "notes.txt",
+      savedName: "notes-1.txt",
+      relativePath: attachmentRelativePath("conv-1", "notes-1.txt"),
+      size: 12,
+      contentType: "text/plain",
+      botId: "bot-1",
+      conversationId: "conv-1",
+    });
+    expect(parseAttachmentMarker(encoded)).toEqual({
+      kind: "attachment",
+      fileName: "notes.txt",
+      savedName: "notes-1.txt",
+      relativePath: "./receivedFiles/conv-1/notes-1.txt",
+      size: 12,
+      contentType: "text/plain",
+      botId: "bot-1",
+      conversationId: "conv-1",
+    });
+    expect(attachmentPromptNote("./receivedFiles/conv-1/notes-1.txt")).toContain(
+      "./receivedFiles/conv-1/notes-1.txt",
+    );
+  });
+
+  it("sanitizes path-like names", () => {
+    expect(sanitizeAttachmentFileName("../../etc/passwd")).toBe("passwd");
+    expect(sanitizeAttachmentFileName("")).toBe("file");
+    expect(parseAttachmentMarker("Scheduled run triggered")).toBeNull();
   });
 });

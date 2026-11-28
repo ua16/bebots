@@ -115,6 +115,10 @@ describe("TaskService smoke", () => {
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runService = new RunService({
       runRepo,

@@ -1,7 +1,12 @@
 import { app, BrowserWindow, ipcMain, session } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { Effect, Layer } from "effect";
 import {
   openDatabase,
@@ -19,6 +24,7 @@ import {
 } from "@bebots/persistence";
 import {
   AppSettingsService,
+  AttachmentService,
   BotService,
   BotDeletionService,
   RunService,
@@ -83,6 +89,15 @@ function formatMcpJson(text: string): string {
     out = `${out.slice(0, MAX_MCP_LOG_BYTES)}… (${out.length - MAX_MCP_LOG_BYTES} bytes truncated)`;
   }
   return out || "(empty)";
+}
+
+function incomingHeadersToRecord(headers: IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") out[key] = value;
+    else if (Array.isArray(value) && value[0] !== undefined) out[key] = value.join(", ");
+  }
+  return out;
 }
 
 /** Pipe a Fetch Response to Node's ServerResponse, streaming bodies (SSE). */
@@ -280,10 +295,16 @@ async function setupBotService(): Promise<void> {
   });
   // Completes the reply loop: human messages in a bot conversation trigger a
   // run for a participant bot, resuming the stored session.
+  const attachmentService = new AttachmentService({
+    workspace,
+    conversationService,
+    botRepo: repo,
+  });
   const conversationCoordinator = new ConversationRunCoordinator({
     conversationService,
     runService,
     botRepo: repo,
+    attachmentService,
   });
   const taskService = new TaskService({
     taskRepo,
@@ -618,6 +639,7 @@ async function setupBotService(): Promise<void> {
     conversationService,
     conversationSessionService,
     conversationCoordinator,
+    attachmentService,
     taskService,
     scheduleService,
     activityService,
@@ -628,7 +650,9 @@ async function setupBotService(): Promise<void> {
     indexer: indexerInstance,
     ensureBotSetup,
   });
-  const webHandler = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
+  const webHandler = HttpRouter.toWebHandler(
+    routes.pipe(Layer.provideMerge(HttpServer.layerServices)),
+  );
 
   const server = createServer(async (req, res) => {
     try {
@@ -663,7 +687,7 @@ async function setupBotService(): Promise<void> {
       // /mcp passthrough (out of scope).
       if (pathname === "/mcp") {
         const chunks: Buffer[] = [];
-        for await (const c of req) chunks.push(c as Buffer);
+        for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
         const buf = Buffer.concat(chunks);
         if (showMcpLogs) {
           const botId = req.headers["x-bebots-bot-id"];
@@ -673,7 +697,7 @@ async function setupBotService(): Promise<void> {
         }
         const request = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
           method: req.method ?? "POST",
-          headers: req.headers as Record<string, string>,
+          headers: incomingHeadersToRecord(req.headers),
           ...(buf.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: buf } : {}),
         });
         const response = await mcpHandle!.handleRequest(request);
@@ -695,12 +719,14 @@ async function setupBotService(): Promise<void> {
 
       // Delegate everything else to the Effect web handler.
       const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
+      for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
       const buf = Buffer.concat(chunks);
       const hasBody = req.method !== "GET" && req.method !== "HEAD";
       let bodyBuf = buf;
-      const reqHeaders = { ...(req.headers as Record<string, string>) };
-      if (hasBody) {
+      const reqHeaders = incomingHeadersToRecord(req.headers);
+      const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
+      const isMultipart = contentType.includes("multipart/form-data");
+      if (hasBody && !isMultipart) {
         reqHeaders["content-type"] = "application/json";
         if (buf.length === 0) {
           bodyBuf = Buffer.from("{}", "utf8");
