@@ -189,12 +189,21 @@ const ConversationBody = Schema.Struct({
   participants: Schema.optional(Schema.Array(Schema.String)),
 });
 
+const MessageAttachmentRef = Schema.Struct({
+  savedName: Schema.String,
+  fileName: Schema.String,
+  size: Schema.Number,
+  contentType: Schema.String,
+  botId: Schema.String,
+});
+
 const MessageBody = Schema.Struct({
   senderType: Schema.optional(Schema.Literals(["human", "bot", "system"])),
   senderId: Schema.optional(Schema.NullOr(Schema.String)),
   content: Schema.optional(Schema.String),
   replyTo: Schema.optional(Schema.String),
   threadId: Schema.optional(Schema.String),
+  attachments: Schema.optional(Schema.Array(MessageAttachmentRef)),
 });
 
 const TaskBody = Schema.Struct({

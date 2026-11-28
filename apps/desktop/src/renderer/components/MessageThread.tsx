@@ -1,9 +1,12 @@
 import type { JSX, RefObject } from "react";
-import { parseAskAnswerMarker } from "@bebots/domain";
+import { FileIcon } from "lucide-react";
+import { parseAskAnswerMarker, parseAttachmentMarker } from "@bebots/domain";
+import type { AttachmentMarker } from "@bebots/domain";
 import type { BebotsBot } from "../../shared/preload-api";
 import type { ApiMessage } from "../lib/api-types";
 import { BotAvatar } from "./avatar";
 import { botName } from "../lib/bot-name";
+import { formatFileSize } from "../lib/attachments";
 
 interface MessageThreadProps {
   readonly messages: readonly ApiMessage[];
@@ -14,6 +17,7 @@ interface MessageThreadProps {
   readonly threadNotice: string | null;
   readonly emptyHintBotName: string;
   readonly endRef: RefObject<HTMLDivElement>;
+  readonly onDownloadAttachment?: (marker: AttachmentMarker) => void;
 }
 
 /**
@@ -51,6 +55,7 @@ export function MessageThread({
   threadNotice,
   emptyHintBotName,
   endRef,
+  onDownloadAttachment,
 }: MessageThreadProps) {
   return (
     <div className="chat-thread">
@@ -70,6 +75,29 @@ export function MessageThread({
                 </div>
               );
             }
+            const attachment = parseAttachmentMarker(m.content);
+            if (attachment !== null) {
+              return (
+                <div
+                  key={m.id}
+                  className="message message-attachment-marker"
+                  data-testid="attachment-marker"
+                >
+                  <button
+                    type="button"
+                    className="message-attachment-chip"
+                    onClick={() => onDownloadAttachment?.(attachment)}
+                    title={`Download ${attachment.fileName}`}
+                  >
+                    <FileIcon size={16} strokeWidth={2} aria-hidden />
+                    <span className="message-attachment-name">{attachment.fileName}</span>
+                    <span className="message-attachment-size">
+                      {formatFileSize(attachment.size)}
+                    </span>
+                  </button>
+                </div>
+              );
+            }
             return (
               <div key={m.id} className="message message-system">
                 <span className="message-content">{m.content}</span>
@@ -81,6 +109,9 @@ export function MessageThread({
                 </time>
               </div>
             );
+          }
+          if (m.senderType === "human" && m.content.trim().length === 0) {
+            return null;
           }
           return (
             <div

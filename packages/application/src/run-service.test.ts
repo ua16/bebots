@@ -112,6 +112,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -222,6 +226,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -286,6 +294,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -332,6 +344,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -395,6 +411,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     let cancelled = false;
     const runtime: AgentRuntime = {
@@ -487,6 +507,10 @@ describe("RunService", () => {
       writePersona: () => Effect.void,
       homePath: () => "/tmp",
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const runtime: AgentRuntime = {
       id: "fake",
@@ -579,6 +603,10 @@ function makeWorkspace(): BotWorkspace {
     writePersona: () => Effect.void,
     homePath: (id) => `/tmp/bots/${id}`,
     removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
   };
 }
 
@@ -923,6 +951,10 @@ describe("RunService session scoping", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const requests: RunRequest[] = [];
     const runtime: AgentRuntime = {
@@ -1037,6 +1069,10 @@ describe("RunService session scoping", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/bots/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const form: Form = {
       id: asFormId("frm_1"),

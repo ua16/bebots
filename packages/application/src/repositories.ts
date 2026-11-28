@@ -259,6 +259,17 @@ export interface IdGenerator {
   readonly generate: () => string;
 }
 
+export interface StoredReceivedFile {
+  readonly savedName: string;
+  readonly size: number;
+}
+
+export interface ReceivedFileBytes {
+  readonly savedName: string;
+  readonly size: number;
+  readonly bytes: Uint8Array;
+}
+
 export interface BotWorkspace {
   readonly root: string;
   readonly ensureHome: (botId: BotId) => Effect.Effect<string, WorkspaceError>;
@@ -266,4 +277,26 @@ export interface BotWorkspace {
   readonly homePath: (botId: BotId) => string;
   /** Remove a bot's home directory (persona, notes, memory, logs) before deleting its record. */
   readonly removeHome: (botId: BotId) => Effect.Effect<void, WorkspaceError>;
+  /** Save bytes under receivedFiles/<conversationId>/, uniquifying the file name. */
+  readonly storeReceivedFile: (
+    botId: BotId,
+    conversationId: string,
+    originalName: string,
+    bytes: Uint8Array,
+  ) => Effect.Effect<StoredReceivedFile, WorkspaceError>;
+  readonly readReceivedFile: (
+    botId: BotId,
+    conversationId: string,
+    savedName: string,
+  ) => Effect.Effect<ReceivedFileBytes | null, WorkspaceError>;
+  readonly removeReceivedFile: (
+    botId: BotId,
+    conversationId: string,
+    savedName: string,
+  ) => Effect.Effect<boolean, WorkspaceError>;
+  /** Delete receivedFiles/<conversationId>/ for a bot (no-op when missing). */
+  readonly removeReceivedConversationDir: (
+    botId: BotId,
+    conversationId: string,
+  ) => Effect.Effect<void, WorkspaceError>;
 }

@@ -336,6 +336,7 @@ export const makeRoutes = (deps: ApiDeps) => {
                 conversationId: params.id,
                 content: body.content ?? "",
                 ...(body.senderType !== undefined && { senderType: body.senderType }),
+                ...(body.attachments !== undefined && { attachments: body.attachments }),
               })
               .pipe(Effect.mapError(mapError));
             return { message: outcome.message, runId: outcome.run?.id ?? null };

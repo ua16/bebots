@@ -1,12 +1,32 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 import { Cause, Effect } from "effect";
 import type { Conversation, Message, MessageSenderType, Run } from "@bebots/domain";
-import { asBotId, asConversationId } from "@bebots/domain";
+import {
+  appendPromptNotes,
+  asBotId,
+  asConversationId,
+  attachmentPromptNote,
+  attachmentRelativePath,
+  encodeAttachmentMarker,
+} from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
-import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
+import { NotFoundError, RepositoryError, ServiceError, ValidationError, WorkspaceError } from "./errors.js";
 import type { BotRepository, Clock } from "./repositories.js";
 import type { RunService } from "./run-service.js";
+import type { AttachmentService } from "./attachment-service.js";
+
+export interface MessageAttachmentRef {
+  readonly savedName: string;
+  readonly fileName: string;
+  readonly size: number;
+  readonly contentType: string;
+  readonly botId: string;
+}
+
+export interface SendMessageInput extends AddMessageInput {
+  readonly attachments?: readonly MessageAttachmentRef[];
+}
 
 /**
  * What RunService needs when a conversation run completes: post the run's
@@ -40,6 +60,7 @@ export interface ConversationRunCoordinatorDeps {
   readonly botRepo: BotRepository;
   /** Optional injected clock (bot-link pin TTLs); defaults to wall time. */
   readonly clock?: Clock;
+  readonly attachmentService?: AttachmentService;
 }
 
 /**
@@ -75,6 +96,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
   private readonly runService: RunService;
   private readonly botRepo: BotRepository;
   private readonly clock: Clock;
+  private readonly attachmentService: AttachmentService | undefined;
   private readonly hopCounts = new Map<string, number>();
 
   /** Pins: caller bot id → target bot id → pinned (caller, target) conversation. */
@@ -87,6 +109,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     this.runService = deps.runService;
     this.botRepo = deps.botRepo;
     this.clock = deps.clock ?? { now: () => Date.now() };
+    this.attachmentService = deps.attachmentService;
   }
 
   // --- Bot-to-bot link pins (send_message continuity) ---
@@ -198,10 +221,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
    * surfaced as `run: null`.
    */
   sendMessage(
-    input: AddMessageInput,
+    input: SendMessageInput,
   ): Effect.Effect<
     SendMessageResult,
-    NotFoundError | ValidationError | RepositoryError | ServiceError
+    NotFoundError | ValidationError | RepositoryError | ServiceError | WorkspaceError
   > {
     const conversationService = this.conversationService;
     const self = this;
@@ -210,16 +233,57 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       if (!conversation) {
         return yield* Effect.fail(new NotFoundError("Conversation", String(input.conversationId)));
       }
-      const message = yield* conversationService.addMessage(input);
+      const attachments = input.attachments ?? [];
+      const content = (input.content ?? "").toString();
+      if (content.trim().length === 0 && attachments.length === 0) {
+        return yield* Effect.fail(
+          new ValidationError("content", "Message content cannot be empty"),
+        );
+      }
+      const message = yield* conversationService.addMessage({
+        ...input,
+        content,
+        allowEmpty: attachments.length > 0,
+      });
       const senderType: MessageSenderType = input.senderType ?? "human";
       const senderId = input.senderId ? String(input.senderId) : null;
 
-      const runs = yield* self.processPersistedMessage(conversation, message, senderType, senderId);
+      const noteLines: string[] = [];
+      for (const attachment of attachments) {
+        const relativePath = attachmentRelativePath(
+          String(conversation.id),
+          attachment.savedName,
+        );
+        noteLines.push(attachmentPromptNote(relativePath));
+        yield* self.recordSystemMarker(
+          String(conversation.id),
+          encodeAttachmentMarker({
+            fileName: attachment.fileName,
+            savedName: attachment.savedName,
+            relativePath,
+            size: attachment.size,
+            contentType: attachment.contentType,
+            botId: attachment.botId,
+            conversationId: String(conversation.id),
+          }),
+        );
+      }
+
+      const promptOverride =
+        noteLines.length > 0 ? appendPromptNotes(message.content, noteLines) : undefined;
+
+      const runs = yield* self.processPersistedMessage(
+        conversation,
+        message,
+        senderType,
+        senderId,
+        promptOverride,
+      );
 
       return { message, run: runs[0] ?? null, runs };
     }) as Effect.Effect<
       SendMessageResult,
-      NotFoundError | ValidationError | RepositoryError | ServiceError
+      NotFoundError | ValidationError | RepositoryError | ServiceError | WorkspaceError
     >;
   }
 
@@ -232,6 +296,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     message: Message,
     senderType: MessageSenderType,
     senderId: string | null,
+    promptOverride?: string,
   ): Effect.Effect<
     readonly Run[],
     NotFoundError | ValidationError | RepositoryError | ServiceError
@@ -332,11 +397,18 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       self.hopCounts.set(String(conversation.id), currentHops + 1);
 
       const recipientList = [...recipients.values()];
+      const prompt = promptOverride ?? message.content;
+      // File-only human sends use an empty message body; the prompt is the
+      // attachment footnotes. Skip starting a run when there is still nothing
+      // for the model to see.
+      if (prompt.trim().length === 0) {
+        return [] as readonly Run[];
+      }
       const startOne = (recipient: { id: string; name: string }) =>
         runService
           .startRun({
             botId: asBotId(recipient.id),
-            prompt: message.content,
+            prompt,
             conversationId: conversation.id,
             triggerType: "message",
             // Bot-to-bot conversation runs resume the recipient's
@@ -432,12 +504,14 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
    */
   deleteConversation(
     conversationId: string,
-  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError> {
+  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError | WorkspaceError> {
     const runService = this.runService;
     const conversationService = this.conversationService;
+    const attachmentService = this.attachmentService;
     const self = this;
     return Effect.gen(function* () {
       const id = asConversationId(conversationId);
+      const existing = yield* conversationService.getConversation(conversationId);
       yield* runService
         .cancelRunsForConversation(id)
         .pipe(
@@ -452,6 +526,19 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       // Run rows and their events are part of the thread's history; children
       // of the conversation go before the conversation row itself.
       yield* runService.deleteRunsForConversation(id);
+      if (attachmentService && existing) {
+        yield* attachmentService
+          .removeConversationFiles(conversationId, existing.participants)
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError(
+                "Removing conversation attachments before delete failed",
+                conversationId,
+                Cause.squash(cause),
+              ),
+            ),
+          );
+      }
       yield* conversationService.deleteConversation(conversationId);
       // In-memory bookkeeping: hop counts and any bot-link pins targeting
       // this conversation must not survive it.
@@ -465,7 +552,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         if (targets.size === 0) self.botLinks.delete(callerId);
       }
       self.botLinkConversations.delete(conversationId);
-    }) as Effect.Effect<void, NotFoundError | RepositoryError | ServiceError>;
+    }) as Effect.Effect<void, NotFoundError | RepositoryError | ServiceError | WorkspaceError>;
   }
 
   /** Trigger recipients for an already-persisted message (used by bot replies). */

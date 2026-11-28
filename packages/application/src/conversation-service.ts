@@ -42,6 +42,8 @@ export interface AddMessageInput {
   readonly replyTo?: MessageId;
   readonly threadId?: string;
   readonly deliveryState?: DeliveryState;
+  /** Allow empty content (file-only human sends that carry attachment markers). */
+  readonly allowEmpty?: boolean;
 }
 
 export interface ListMessagesOptions {
@@ -180,7 +182,7 @@ export class ConversationService {
     const ids = this.ids;
     return Effect.gen(function* () {
       const content = (input.content ?? "").toString();
-      if (content.trim().length === 0) {
+      if (content.trim().length === 0 && input.allowEmpty !== true) {
         return yield* Effect.fail(
           new ValidationError("content", "Message content cannot be empty"),
         );

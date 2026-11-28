@@ -636,14 +636,129 @@ body,
   position: relative;
   flex: none;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0.35rem;
   box-sizing: border-box;
   margin: 0.5rem 44px 26px;
   min-height: 49px;
-  padding: 0 8px 0 18px;
+  padding: 0.35rem 8px 0.35rem 18px;
   border-radius: var(--radius-pill);
   background: var(--surface);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.composer-file-input {
+  display: none;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.25rem 0.15rem 0;
+}
+
+.composer-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.3rem 0.45rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.composer-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+}
+
+.composer-attachment-size {
+  color: var(--muted);
+  flex: none;
+}
+
+.composer-attachment-progress {
+  position: relative;
+  flex: none;
+  width: 2.5rem;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 15%, transparent);
+  overflow: hidden;
+}
+
+.composer-attachment-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--text);
+}
+
+.composer-attachment-remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer-attachment-remove:hover {
+  color: var(--text);
+}
+
+.message-attachment-marker {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.15rem 0;
+}
+
+.message-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: min(100%, 22rem);
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--stroke) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.message-attachment-chip:hover {
+  background: color-mix(in srgb, var(--text) 6%, var(--surface));
+}
+
+.message-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.message-attachment-size {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .composer:focus-within {

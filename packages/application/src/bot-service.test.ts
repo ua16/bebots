@@ -37,6 +37,10 @@ describe("BotService", () => {
       },
       homePath: (id) => `/tmp/bots/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const clock: Clock = { now: () => 42 };
     const ids: IdGenerator = { generate: () => "bot-1" };
@@ -75,6 +79,10 @@ describe("BotService", () => {
       writePersona: () => Effect.void,
       homePath: (id) => `/tmp/${id}`,
       removeHome: () => Effect.void,
+      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
+      readReceivedFile: () => Effect.succeed(null),
+      removeReceivedFile: () => Effect.succeed(false),
+      removeReceivedConversationDir: () => Effect.void,
     };
     const service = new BotService({
       repo,

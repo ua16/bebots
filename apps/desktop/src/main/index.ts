@@ -19,6 +19,7 @@ import {
 } from "@bebots/persistence";
 import {
   AppSettingsService,
+  AttachmentService,
   BotService,
   BotDeletionService,
   RunService,
@@ -39,6 +40,7 @@ import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
 import type { BotId, RunStatus, TaskStatus, ScheduleId } from "@bebots/domain";
 import { asBotId, asRunId } from "@bebots/domain";
+import { NotFoundError, ValidationError } from "@bebots/application";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { makeRoutes } from "@bebots/api";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
@@ -280,10 +282,16 @@ async function setupBotService(): Promise<void> {
   });
   // Completes the reply loop: human messages in a bot conversation trigger a
   // run for a participant bot, resuming the stored session.
+  const attachmentService = new AttachmentService({
+    workspace,
+    conversationService,
+    botRepo: repo,
+  });
   const conversationCoordinator = new ConversationRunCoordinator({
     conversationService,
     runService,
     botRepo: repo,
+    attachmentService,
   });
   const taskService = new TaskService({
     taskRepo,
@@ -693,10 +701,96 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
-      // Delegate everything else to the Effect web handler.
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       const buf = Buffer.concat(chunks);
+
+      // Attachment upload/download/delete — outside Effect HttpApi because the
+      // desktop server coerces request bodies to JSON for the typed routes, and
+      // binary responses need Content-Disposition control.
+      const attachmentFileMatch =
+        /^\/api\/v1\/conversations\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname);
+      const attachmentUploadMatch =
+        req.method === "POST"
+          ? /^\/api\/v1\/conversations\/([^/]+)\/attachments$/.exec(pathname)
+          : null;
+      if (attachmentUploadMatch) {
+        try {
+          const conversationId = decodeURIComponent(attachmentUploadMatch[1] ?? "");
+          const uploadRequest = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
+            method: "POST",
+            headers: req.headers as Record<string, string>,
+            body: buf,
+          });
+          const form = await uploadRequest.formData();
+          const entry = form.get("file");
+          if (!(entry instanceof File)) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Expected multipart file field named file" }));
+            return;
+          }
+          const bytes = new Uint8Array(await entry.arrayBuffer());
+          const stored = await Effect.runPromise(
+            attachmentService.storeUpload({
+              conversationId,
+              originalName: entry.name || "file",
+              contentType: entry.type || "application/octet-stream",
+              bytes,
+            }),
+          );
+          res.statusCode = 201;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify(stored));
+        } catch (e) {
+          const status =
+            e instanceof ValidationError ? 400 : e instanceof NotFoundError ? 404 : 500;
+          res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        }
+        return;
+      }
+      if (attachmentFileMatch && (req.method === "GET" || req.method === "DELETE")) {
+        try {
+          const conversationId = decodeURIComponent(attachmentFileMatch[1] ?? "");
+          const savedName = decodeURIComponent(attachmentFileMatch[2] ?? "");
+          const botId = url.searchParams.get("botId") ?? "";
+          if (botId.trim().length === 0) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "botId query parameter is required" }));
+            return;
+          }
+          if (req.method === "DELETE") {
+            await Effect.runPromise(
+              attachmentService.deleteAttachment({ conversationId, botId, savedName }),
+            );
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          const file = await Effect.runPromise(
+            attachmentService.readAttachment({ conversationId, botId, savedName }),
+          );
+          res.statusCode = 200;
+          res.setHeader("Content-Type", file.contentType);
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+          );
+          res.end(Buffer.from(file.bytes));
+        } catch (e) {
+          const status =
+            e instanceof ValidationError ? 400 : e instanceof NotFoundError ? 404 : 500;
+          res.statusCode = status;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        }
+        return;
+      }
+
+      // Delegate everything else to the Effect web handler.
       const hasBody = req.method !== "GET" && req.method !== "HEAD";
       let bodyBuf = buf;
       const reqHeaders = { ...(req.headers as Record<string, string>) };
