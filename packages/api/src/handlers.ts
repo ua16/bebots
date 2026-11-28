@@ -1,6 +1,6 @@
-import { Effect, Layer } from "effect";
+import { Effect, FileSystem, Layer } from "effect";
 import { HttpApiBuilder, HttpApiError, HttpApiScalar } from "effect/http-api";
-import { HttpRouter, HttpServer } from "effect/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { Api } from "./api.js";
 import {
   asBotId,
@@ -13,6 +13,7 @@ import {
 import type { BotAvatar, ModelRef } from "@bebots/domain";
 import type { RuntimeModelInfo } from "@bebots/application";
 import {
+  AttachmentService,
   BotService,
   BotDeletionService,
   RunService,
@@ -25,7 +26,9 @@ import {
   AppSettingsService,
   LiveEventBus,
   NotFoundError,
+  RepositoryError,
   ValidationError,
+  WorkspaceError,
 } from "@bebots/application";
 
 export interface ApiDeps {
@@ -35,6 +38,7 @@ export interface ApiDeps {
   readonly conversationService: ConversationService;
   readonly conversationSessionService: ConversationSessionService;
   readonly conversationCoordinator: ConversationRunCoordinator;
+  readonly attachmentService: AttachmentService;
   readonly taskService: TaskService;
   readonly scheduleService: ScheduleService;
   readonly activityService: ActivityService;
@@ -58,6 +62,10 @@ function mapError(
 ): HttpApiError.BadRequest | HttpApiError.NotFound | HttpApiError.InternalServerError {
   if (e instanceof NotFoundError) return new HttpApiError.NotFound();
   if (e instanceof ValidationError) return new HttpApiError.BadRequest();
+  if (e instanceof WorkspaceError || e instanceof RepositoryError) {
+    console.error("API handler service error:", e);
+    return new HttpApiError.InternalServerError();
+  }
   // InternalServerError hides the cause from the client; it must not hide it
   // from the operator either, so unexpected service errors land in the log.
   console.error("API handler unexpected error:", e);
@@ -341,6 +349,43 @@ export const makeRoutes = (deps: ApiDeps) => {
               .pipe(Effect.mapError(mapError));
             return { message: outcome.message, runId: outcome.run?.id ?? null };
           }),
+        uploadAttachment: ({ params, payload }) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const bytes = yield* fs.readFile(payload.file.path).pipe(Effect.mapError(mapError));
+            return yield* deps.attachmentService
+              .storeUpload({
+                conversationId: params.id,
+                originalName: payload.file.name || "file",
+                contentType: payload.file.contentType || "application/octet-stream",
+                bytes,
+              })
+              .pipe(Effect.mapError(mapError));
+          }),
+        downloadAttachment: ({ params, query }) =>
+          Effect.gen(function* () {
+            const file = yield* deps.attachmentService
+              .readAttachment({
+                conversationId: params.id,
+                botId: query.botId,
+                savedName: params.fileName,
+              })
+              .pipe(Effect.mapError(mapError));
+            return HttpServerResponse.uint8Array(file.bytes, {
+              contentType: file.contentType,
+              headers: {
+                "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+              },
+            });
+          }),
+        deleteAttachment: ({ params, query }) =>
+          deps.attachmentService
+            .deleteAttachment({
+              conversationId: params.id,
+              botId: query.botId,
+              savedName: params.fileName,
+            })
+            .pipe(Effect.mapError(mapError), Effect.asVoid),
         listSessions: ({ params }) =>
           deps.conversationSessionService
             .listSessions({ conversationId: params.id })

@@ -42,7 +42,6 @@ export interface AddMessageInput {
   readonly replyTo?: MessageId;
   readonly threadId?: string;
   readonly deliveryState?: DeliveryState;
-  /** Allow empty content (file-only human sends that carry attachment markers). */
   readonly allowEmpty?: boolean;
 }
 

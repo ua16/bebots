@@ -11,7 +11,7 @@ import {
 } from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
-import { NotFoundError, RepositoryError, ServiceError, ValidationError, WorkspaceError } from "./errors.js";
+import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
 import type { BotRepository, Clock } from "./repositories.js";
 import type { RunService } from "./run-service.js";
 import type { AttachmentService } from "./attachment-service.js";
@@ -224,7 +224,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     input: SendMessageInput,
   ): Effect.Effect<
     SendMessageResult,
-    NotFoundError | ValidationError | RepositoryError | ServiceError | WorkspaceError
+    NotFoundError | ValidationError | RepositoryError | ServiceError
   > {
     const conversationService = this.conversationService;
     const self = this;
@@ -280,11 +280,9 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         promptOverride,
       );
 
-      return { message, run: runs[0] ?? null, runs };
-    }) as Effect.Effect<
-      SendMessageResult,
-      NotFoundError | ValidationError | RepositoryError | ServiceError | WorkspaceError
-    >;
+      const result: SendMessageResult = { message, run: runs[0] ?? null, runs };
+      return result;
+    });
   }
 
   /**
@@ -389,8 +387,9 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         }
       }
 
+      const noRuns: readonly Run[] = [];
       if (recipients.size === 0 || !canPropagate) {
-        return [] as readonly Run[];
+        return noRuns;
       }
 
       // Hop bookkeeping.
@@ -398,11 +397,8 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
 
       const recipientList = [...recipients.values()];
       const prompt = promptOverride ?? message.content;
-      // File-only human sends use an empty message body; the prompt is the
-      // attachment footnotes. Skip starting a run when there is still nothing
-      // for the model to see.
       if (prompt.trim().length === 0) {
-        return [] as readonly Run[];
+        return noRuns;
       }
       const startOne = (recipient: { id: string; name: string }) =>
         runService
@@ -504,7 +500,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
    */
   deleteConversation(
     conversationId: string,
-  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError | WorkspaceError> {
+  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError> {
     const runService = this.runService;
     const conversationService = this.conversationService;
     const attachmentService = this.attachmentService;
@@ -552,7 +548,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
         if (targets.size === 0) self.botLinks.delete(callerId);
       }
       self.botLinkConversations.delete(conversationId);
-    }) as Effect.Effect<void, NotFoundError | RepositoryError | ServiceError | WorkspaceError>;
+    });
   }
 
   /** Trigger recipients for an already-persisted message (used by bot replies). */

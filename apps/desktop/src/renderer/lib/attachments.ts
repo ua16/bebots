@@ -14,8 +14,19 @@ export interface UploadedAttachment {
 export interface StagedAttachment {
   readonly id: string;
   readonly file: File;
-  /** 0–1 while uploading; null when staged / idle. */
   readonly progress: number | null;
+}
+
+function isUploadedAttachment(value: unknown): value is UploadedAttachment {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("botId" in value) || typeof value.botId !== "string") return false;
+  if (!("conversationId" in value) || typeof value.conversationId !== "string") return false;
+  if (!("fileName" in value) || typeof value.fileName !== "string") return false;
+  if (!("savedName" in value) || typeof value.savedName !== "string") return false;
+  if (!("relativePath" in value) || typeof value.relativePath !== "string") return false;
+  if (!("size" in value) || typeof value.size !== "number") return false;
+  if (!("contentType" in value) || typeof value.contentType !== "string") return false;
+  return true;
 }
 
 export function formatFileSize(bytes: number): string {
@@ -50,7 +61,12 @@ export function uploadAttachment(
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          resolve(JSON.parse(xhr.responseText) as UploadedAttachment);
+          const parsed: unknown = JSON.parse(xhr.responseText);
+          if (!isUploadedAttachment(parsed)) {
+            reject(new Error(`API ${url} failed: invalid attachment response`));
+            return;
+          }
+          resolve(parsed);
         } catch (e) {
           reject(e);
         }

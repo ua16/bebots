@@ -8,7 +8,7 @@ import {
 } from "@bebots/domain";
 import type { BotId } from "@bebots/domain";
 import type { BotRepository, BotWorkspace } from "./repositories.js";
-import { NotFoundError, ValidationError, WorkspaceError } from "./errors.js";
+import { NotFoundError, RepositoryError, ValidationError, WorkspaceError } from "./errors.js";
 import type { ConversationService } from "./conversation-service.js";
 
 export interface StoredAttachment {
@@ -34,10 +34,6 @@ export interface AttachmentServiceDeps {
   readonly botRepo: BotRepository;
 }
 
-/**
- * Stores chat uploads under a bot home at receivedFiles/<conversationId>/,
- * and serves them back for re-download.
- */
 export class AttachmentService {
   private readonly workspace: BotWorkspace;
   private readonly conversationService: ConversationService;
@@ -49,10 +45,9 @@ export class AttachmentService {
     this.botRepo = deps.botRepo;
   }
 
-  /** First active bot participant — same routing as human message runs. */
   resolveRecipientBotId(
     conversationId: string,
-  ): Effect.Effect<BotId, NotFoundError | ValidationError> {
+  ): Effect.Effect<BotId, NotFoundError | ValidationError | RepositoryError> {
     const conversationService = this.conversationService;
     const botRepo = this.botRepo;
     return Effect.gen(function* () {
@@ -73,7 +68,7 @@ export class AttachmentService {
       return yield* Effect.fail(
         new ValidationError("conversationId", "Conversation has no active bot participant"),
       );
-    }) as Effect.Effect<BotId, NotFoundError | ValidationError>;
+    });
   }
 
   storeUpload(input: {
@@ -81,7 +76,10 @@ export class AttachmentService {
     readonly originalName: string;
     readonly contentType: string;
     readonly bytes: Uint8Array;
-  }): Effect.Effect<StoredAttachment, NotFoundError | ValidationError | WorkspaceError> {
+  }): Effect.Effect<
+    StoredAttachment,
+    NotFoundError | ValidationError | WorkspaceError | RepositoryError
+  > {
     const workspace = this.workspace;
     const self = this;
     return Effect.gen(function* () {
@@ -107,7 +105,7 @@ export class AttachmentService {
         input.bytes,
       );
       const fileName = sanitizeAttachmentFileName(input.originalName);
-      return {
+      const result: StoredAttachment = {
         botId: String(botId),
         conversationId,
         fileName,
@@ -116,7 +114,8 @@ export class AttachmentService {
         size: stored.size,
         contentType: input.contentType.trim() || "application/octet-stream",
       };
-    }) as Effect.Effect<StoredAttachment, NotFoundError | ValidationError | WorkspaceError>;
+      return result;
+    });
   }
 
   readAttachment(input: {
@@ -136,13 +135,14 @@ export class AttachmentService {
       if (!file) {
         return yield* Effect.fail(new NotFoundError("Attachment", savedName));
       }
-      return {
+      const result: AttachmentBytes = {
         fileName: file.savedName,
         contentType: "application/octet-stream",
         size: file.size,
         bytes: file.bytes,
       };
-    }) as Effect.Effect<AttachmentBytes, NotFoundError | ValidationError | WorkspaceError>;
+      return result;
+    });
   }
 
   deleteAttachment(input: {
@@ -162,24 +162,23 @@ export class AttachmentService {
       if (!removed) {
         return yield* Effect.fail(new NotFoundError("Attachment", savedName));
       }
-    }) as Effect.Effect<void, NotFoundError | ValidationError | WorkspaceError>;
+    });
   }
 
-  /** Remove receivedFiles/<conversationId> for every bot participant (conversation delete). */
   removeConversationFiles(
     conversationId: string,
     participantIds: readonly string[],
-  ): Effect.Effect<void, WorkspaceError> {
+  ): Effect.Effect<void> {
     const workspace = this.workspace;
     return Effect.gen(function* () {
       const safeId = String(asConversationId(conversationId));
       for (const raw of participantIds) {
         const id = raw.trim();
         if (id.length === 0) continue;
-        yield* workspace.removeReceivedConversationDir(asBotId(id), safeId).pipe(
-          Effect.catchCause(() => Effect.void),
-        );
+        yield* workspace
+          .removeReceivedConversationDir(asBotId(id), safeId)
+          .pipe(Effect.catchCause(() => Effect.void));
       }
-    }) as Effect.Effect<void, WorkspaceError>;
+    });
   }
 }

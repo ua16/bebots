@@ -1,7 +1,12 @@
 import { app, BrowserWindow, ipcMain, session } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { Effect, Layer } from "effect";
 import {
   openDatabase,
@@ -40,7 +45,6 @@ import type { AgentRuntime } from "@bebots/application";
 import type { ConversationReplyRecorder } from "@bebots/application";
 import type { BotId, RunStatus, TaskStatus, ScheduleId } from "@bebots/domain";
 import { asBotId, asRunId } from "@bebots/domain";
-import { NotFoundError, ValidationError } from "@bebots/application";
 import { OpenCodeRuntime } from "@bebots/runtime-opencode";
 import { makeRoutes } from "@bebots/api";
 import { createNodeBotWorkspace, createWorkspaceIndexer } from "./workspace";
@@ -85,6 +89,15 @@ function formatMcpJson(text: string): string {
     out = `${out.slice(0, MAX_MCP_LOG_BYTES)}… (${out.length - MAX_MCP_LOG_BYTES} bytes truncated)`;
   }
   return out || "(empty)";
+}
+
+function incomingHeadersToRecord(headers: IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") out[key] = value;
+    else if (Array.isArray(value) && value[0] !== undefined) out[key] = value.join(", ");
+  }
+  return out;
 }
 
 /** Pipe a Fetch Response to Node's ServerResponse, streaming bodies (SSE). */
@@ -626,6 +639,7 @@ async function setupBotService(): Promise<void> {
     conversationService,
     conversationSessionService,
     conversationCoordinator,
+    attachmentService,
     taskService,
     scheduleService,
     activityService,
@@ -636,7 +650,9 @@ async function setupBotService(): Promise<void> {
     indexer: indexerInstance,
     ensureBotSetup,
   });
-  const webHandler = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
+  const webHandler = HttpRouter.toWebHandler(
+    routes.pipe(Layer.provideMerge(HttpServer.layerServices)),
+  );
 
   const server = createServer(async (req, res) => {
     try {
@@ -671,7 +687,7 @@ async function setupBotService(): Promise<void> {
       // /mcp passthrough (out of scope).
       if (pathname === "/mcp") {
         const chunks: Buffer[] = [];
-        for await (const c of req) chunks.push(c as Buffer);
+        for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
         const buf = Buffer.concat(chunks);
         if (showMcpLogs) {
           const botId = req.headers["x-bebots-bot-id"];
@@ -681,7 +697,7 @@ async function setupBotService(): Promise<void> {
         }
         const request = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
           method: req.method ?? "POST",
-          headers: req.headers as Record<string, string>,
+          headers: incomingHeadersToRecord(req.headers),
           ...(buf.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: buf } : {}),
         });
         const response = await mcpHandle!.handleRequest(request);
@@ -701,100 +717,16 @@ async function setupBotService(): Promise<void> {
         return;
       }
 
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const buf = Buffer.concat(chunks);
-
-      // Attachment upload/download/delete — outside Effect HttpApi because the
-      // desktop server coerces request bodies to JSON for the typed routes, and
-      // binary responses need Content-Disposition control.
-      const attachmentFileMatch =
-        /^\/api\/v1\/conversations\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname);
-      const attachmentUploadMatch =
-        req.method === "POST"
-          ? /^\/api\/v1\/conversations\/([^/]+)\/attachments$/.exec(pathname)
-          : null;
-      if (attachmentUploadMatch) {
-        try {
-          const conversationId = decodeURIComponent(attachmentUploadMatch[1] ?? "");
-          const uploadRequest = new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url}`, {
-            method: "POST",
-            headers: req.headers as Record<string, string>,
-            body: buf,
-          });
-          const form = await uploadRequest.formData();
-          const entry = form.get("file");
-          if (!(entry instanceof File)) {
-            res.statusCode = 400;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "Expected multipart file field named file" }));
-            return;
-          }
-          const bytes = new Uint8Array(await entry.arrayBuffer());
-          const stored = await Effect.runPromise(
-            attachmentService.storeUpload({
-              conversationId,
-              originalName: entry.name || "file",
-              contentType: entry.type || "application/octet-stream",
-              bytes,
-            }),
-          );
-          res.statusCode = 201;
-          res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify(stored));
-        } catch (e) {
-          const status =
-            e instanceof ValidationError ? 400 : e instanceof NotFoundError ? 404 : 500;
-          res.statusCode = status;
-          res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-        }
-        return;
-      }
-      if (attachmentFileMatch && (req.method === "GET" || req.method === "DELETE")) {
-        try {
-          const conversationId = decodeURIComponent(attachmentFileMatch[1] ?? "");
-          const savedName = decodeURIComponent(attachmentFileMatch[2] ?? "");
-          const botId = url.searchParams.get("botId") ?? "";
-          if (botId.trim().length === 0) {
-            res.statusCode = 400;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "botId query parameter is required" }));
-            return;
-          }
-          if (req.method === "DELETE") {
-            await Effect.runPromise(
-              attachmentService.deleteAttachment({ conversationId, botId, savedName }),
-            );
-            res.statusCode = 204;
-            res.end();
-            return;
-          }
-          const file = await Effect.runPromise(
-            attachmentService.readAttachment({ conversationId, botId, savedName }),
-          );
-          res.statusCode = 200;
-          res.setHeader("Content-Type", file.contentType);
-          res.setHeader(
-            "Content-Disposition",
-            `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
-          );
-          res.end(Buffer.from(file.bytes));
-        } catch (e) {
-          const status =
-            e instanceof ValidationError ? 400 : e instanceof NotFoundError ? 404 : 500;
-          res.statusCode = status;
-          res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
-        }
-        return;
-      }
-
       // Delegate everything else to the Effect web handler.
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+      const buf = Buffer.concat(chunks);
       const hasBody = req.method !== "GET" && req.method !== "HEAD";
       let bodyBuf = buf;
-      const reqHeaders = { ...(req.headers as Record<string, string>) };
-      if (hasBody) {
+      const reqHeaders = incomingHeadersToRecord(req.headers);
+      const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
+      const isMultipart = contentType.includes("multipart/form-data");
+      if (hasBody && !isMultipart) {
         reqHeaders["content-type"] = "application/json";
         if (buf.length === 0) {
           bodyBuf = Buffer.from("{}", "utf8");

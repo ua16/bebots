@@ -277,7 +277,6 @@ export interface BotWorkspace {
   readonly homePath: (botId: BotId) => string;
   /** Remove a bot's home directory (persona, notes, memory, logs) before deleting its record. */
   readonly removeHome: (botId: BotId) => Effect.Effect<void, WorkspaceError>;
-  /** Save bytes under receivedFiles/<conversationId>/, uniquifying the file name. */
   readonly storeReceivedFile: (
     botId: BotId,
     conversationId: string,
@@ -294,7 +293,6 @@ export interface BotWorkspace {
     conversationId: string,
     savedName: string,
   ) => Effect.Effect<boolean, WorkspaceError>;
-  /** Delete receivedFiles/<conversationId>/ for a bot (no-op when missing). */
   readonly removeReceivedConversationDir: (
     botId: BotId,
     conversationId: string,

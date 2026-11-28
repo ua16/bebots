@@ -6,9 +6,11 @@ import {
   HttpApiSchema,
   OpenApi,
 } from "effect/http-api";
+import { Multipart } from "effect/http";
 import { Schema, SchemaGetter } from "effect";
 import {
   BotAvatarSchema,
+  MAX_ATTACHMENT_BYTES,
   ModelRefPatchSchema,
   ModelRefSchema,
   ScheduleTriggerSchema,
@@ -204,6 +206,25 @@ const MessageBody = Schema.Struct({
   replyTo: Schema.optional(Schema.String),
   threadId: Schema.optional(Schema.String),
   attachments: Schema.optional(Schema.Array(MessageAttachmentRef)),
+});
+
+const AttachmentResponse = Schema.Struct({
+  botId: Schema.String,
+  conversationId: Schema.String,
+  fileName: Schema.String,
+  savedName: Schema.String,
+  relativePath: Schema.String,
+  size: Schema.Number,
+  contentType: Schema.String,
+});
+
+const AttachmentFileParams = Schema.Struct({
+  id: Schema.String,
+  fileName: Schema.String,
+});
+
+const AttachmentBotQuery = Schema.Struct({
+  botId: Schema.String,
 });
 
 const TaskBody = Schema.Struct({
@@ -410,6 +431,26 @@ const conversations = HttpApiGroup.make("conversations").add(
     params: IdParams,
     payload: MessageBody,
     success: HttpApiSchema.status(201)(PostMessageResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.post("uploadAttachment", "/api/v1/conversations/:id/attachments", {
+    params: IdParams,
+    payload: Schema.Struct({
+      file: Multipart.SingleFileSchema,
+    }).pipe(HttpApiSchema.asMultipart({ maxFileSize: MAX_ATTACHMENT_BYTES })),
+    success: HttpApiSchema.status(201)(AttachmentResponse),
+    error: ApiError,
+  }),
+  HttpApiEndpoint.get("downloadAttachment", "/api/v1/conversations/:id/attachments/:fileName", {
+    params: AttachmentFileParams,
+    query: AttachmentBotQuery,
+    success: U,
+    error: ApiError,
+  }),
+  HttpApiEndpoint.delete("deleteAttachment", "/api/v1/conversations/:id/attachments/:fileName", {
+    params: AttachmentFileParams,
+    query: AttachmentBotQuery,
+    success: HttpApiSchema.NoContent,
     error: ApiError,
   }),
   HttpApiEndpoint.get("listSessions", "/api/v1/conversations/:id/sessions", {

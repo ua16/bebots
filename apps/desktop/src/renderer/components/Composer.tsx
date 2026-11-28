@@ -16,18 +16,14 @@ interface ComposerProps {
   readonly onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   readonly onNewSession: () => void;
   readonly onSubmit: () => void;
-  /** When true, the textarea is blocked (e.g. answering a non-composer form). */
   readonly inputDisabled?: boolean;
-  /** When true, Send is blocked (in-flight send or form restrictions). */
   readonly sendDisabled?: boolean;
   readonly stagedFiles?: readonly StagedAttachment[];
   readonly onAddFiles?: ((files: readonly File[]) => void) | undefined;
   readonly onRemoveFile?: ((id: string) => void) | undefined;
-  /** While true, staged chips cannot be removed (upload in flight for this send). */
   readonly stagingLocked?: boolean;
 }
 
-/** Composer: mention popup, attachment chips, new-session pill, textarea, send. */
 export function Composer({
   draft,
   placeholder,
