@@ -11,7 +11,13 @@ import {
 } from "@bebots/domain";
 import type { AddMessageInput } from "./conversation-service.js";
 import { ConversationService } from "./conversation-service.js";
-import { NotFoundError, RepositoryError, ServiceError, ValidationError } from "./errors.js";
+import {
+  NotFoundError,
+  RepositoryError,
+  ServiceError,
+  ValidationError,
+  WorkspaceError,
+} from "./errors.js";
 import type { BotRepository, Clock } from "./repositories.js";
 import type { RunService } from "./run-service.js";
 import type { AttachmentService } from "./attachment-service.js";
@@ -224,9 +230,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
     input: SendMessageInput,
   ): Effect.Effect<
     SendMessageResult,
-    NotFoundError | ValidationError | RepositoryError | ServiceError
+    NotFoundError | ValidationError | RepositoryError | ServiceError | WorkspaceError
   > {
     const conversationService = this.conversationService;
+    const attachmentService = this.attachmentService;
     const self = this;
     return Effect.gen(function* () {
       const conversation = yield* conversationService.getConversation(input.conversationId);
@@ -240,35 +247,73 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
           new ValidationError("content", "Message content cannot be empty"),
         );
       }
+
+      if (attachments.length > 0) {
+        if (!attachmentService) {
+          return yield* Effect.fail(new ServiceError("AttachmentService is not configured"));
+        }
+        const recipientBotId = yield* attachmentService.resolveRecipientBotId(
+          String(conversation.id),
+        );
+        for (const attachment of attachments) {
+          if (attachment.botId !== String(recipientBotId)) {
+            return yield* Effect.fail(
+              new ValidationError("botId", "Attachment botId does not match conversation recipient"),
+            );
+          }
+          yield* attachmentService.assertAttachmentPresent({
+            conversationId: String(conversation.id),
+            botId: attachment.botId,
+            savedName: attachment.savedName,
+            expectedSize: attachment.size,
+          });
+        }
+      }
+
+      const persistedIds: string[] = [];
+      const rollbackPersisted = () =>
+        Effect.forEach(
+          [...persistedIds].reverse(),
+          (id) => conversationService.deleteMessage(id).pipe(Effect.catchCause(() => Effect.void)),
+          { concurrency: 1, discard: true },
+        );
+
       const message = yield* conversationService.addMessage({
         ...input,
         content,
         allowEmpty: attachments.length > 0,
       });
-      const senderType: MessageSenderType = input.senderType ?? "human";
-      const senderId = input.senderId ? String(input.senderId) : null;
+      persistedIds.push(String(message.id));
 
       const noteLines: string[] = [];
-      for (const attachment of attachments) {
-        const relativePath = attachmentRelativePath(
-          String(conversation.id),
-          attachment.savedName,
-        );
-        noteLines.push(attachmentPromptNote(relativePath));
-        yield* self.recordSystemMarker(
-          String(conversation.id),
-          encodeAttachmentMarker({
-            fileName: attachment.fileName,
-            savedName: attachment.savedName,
-            relativePath,
-            size: attachment.size,
-            contentType: attachment.contentType,
-            botId: attachment.botId,
-            conversationId: String(conversation.id),
-          }),
-        );
+      if (attachments.length > 0) {
+        yield* Effect.gen(function* () {
+          for (const attachment of attachments) {
+            const relativePath = attachmentRelativePath(
+              String(conversation.id),
+              attachment.savedName,
+            );
+            noteLines.push(attachmentPromptNote(relativePath));
+            const marker = yield* conversationService.addMessage({
+              conversationId: String(conversation.id),
+              content: encodeAttachmentMarker({
+                fileName: attachment.fileName,
+                savedName: attachment.savedName,
+                relativePath,
+                size: attachment.size,
+                contentType: attachment.contentType,
+                botId: attachment.botId,
+                conversationId: String(conversation.id),
+              }),
+              senderType: "system",
+            });
+            persistedIds.push(String(marker.id));
+          }
+        }).pipe(Effect.tapError(() => rollbackPersisted()));
       }
 
+      const senderType: MessageSenderType = input.senderType ?? "human";
+      const senderId = input.senderId ? String(input.senderId) : null;
       const promptOverride =
         noteLines.length > 0 ? appendPromptNotes(message.content, noteLines) : undefined;
 
@@ -500,7 +545,7 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
    */
   deleteConversation(
     conversationId: string,
-  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError> {
+  ): Effect.Effect<void, NotFoundError | RepositoryError | ServiceError | WorkspaceError> {
     const runService = this.runService;
     const conversationService = this.conversationService;
     const attachmentService = this.attachmentService;
@@ -523,17 +568,10 @@ export class ConversationRunCoordinator implements ConversationReplyRecorder {
       // of the conversation go before the conversation row itself.
       yield* runService.deleteRunsForConversation(id);
       if (attachmentService && existing) {
-        yield* attachmentService
-          .removeConversationFiles(conversationId, existing.participants)
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logError(
-                "Removing conversation attachments before delete failed",
-                conversationId,
-                Cause.squash(cause),
-              ),
-            ),
-          );
+        yield* attachmentService.removeConversationFiles(
+          conversationId,
+          existing.participants,
+        );
       }
       yield* conversationService.deleteConversation(conversationId);
       // In-memory bookkeeping: hop counts and any bot-link pins targeting

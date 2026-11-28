@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { Cause, Effect, Exit, Stream } from "effect";
 import type { Bot, Conversation, ConversationSession, Message, Run } from "@bebots/domain";
 import { asBotId, asConversationId, avatarFromBotId } from "@bebots/domain";
+import { AttachmentService } from "./attachment-service.js";
 import { BOT_LINK_PIN_TTL_MS, ConversationRunCoordinator } from "./conversation-run-coordinator.js";
 import { ConversationService, ConversationSessionService } from "./conversation-service.js";
-import { NotFoundError } from "./errors.js";
+import { NotFoundError, ValidationError, WorkspaceError } from "./errors.js";
 import { RunService } from "./run-service.js";
 import type {
   BotRepository,
@@ -141,17 +142,51 @@ const botRepo: BotRepository = {
   delete: () => Effect.void,
 };
 
-const workspace: BotWorkspace = {
-  root: "/tmp/bots",
-  ensureHome: () => Effect.succeed("/tmp/bots"),
-  writePersona: () => Effect.void,
-  homePath: () => "/tmp/bots/bot-1",
-  removeHome: () => Effect.void,
-      storeReceivedFile: () => Effect.succeed({ savedName: "file", size: 0 }),
-      readReceivedFile: () => Effect.succeed(null),
-      removeReceivedFile: () => Effect.succeed(false),
-      removeReceivedConversationDir: () => Effect.void,
-};
+function makeWorkspace(options?: {
+  readonly files?: Map<string, { size: number; bytes: Uint8Array }>;
+  readonly removeConversationDir?: () => Effect.Effect<void, WorkspaceError>;
+}): BotWorkspace {
+  const files = options?.files ?? new Map();
+  const keyOf = (botId: string, conversationId: string, savedName: string) =>
+    `${botId}/${conversationId}/${savedName}`;
+  return {
+    root: "/tmp/bots",
+    ensureHome: () => Effect.succeed("/tmp/bots"),
+    writePersona: () => Effect.void,
+    homePath: (id) => `/tmp/bots/${id}`,
+    removeHome: () => Effect.void,
+    storeReceivedFile: (botId, conversationId, originalName, bytes) => {
+      const savedName = originalName;
+      files.set(keyOf(String(botId), conversationId, savedName), {
+        size: bytes.byteLength,
+        bytes,
+      });
+      return Effect.succeed({ savedName, size: bytes.byteLength });
+    },
+    readReceivedFile: (botId, conversationId, savedName) => {
+      const hit = files.get(keyOf(String(botId), conversationId, savedName));
+      if (!hit) return Effect.succeed(null);
+      return Effect.succeed({ savedName, size: hit.size, bytes: hit.bytes });
+    },
+    removeReceivedFile: (botId, conversationId, savedName) => {
+      const key = keyOf(String(botId), conversationId, savedName);
+      if (!files.has(key)) return Effect.succeed(false);
+      files.delete(key);
+      return Effect.succeed(true);
+    },
+    removeReceivedConversationDir:
+      options?.removeConversationDir ??
+      ((botId, conversationId) => {
+        const prefix = `${String(botId)}/${conversationId}/`;
+        for (const key of [...files.keys()]) {
+          if (key.startsWith(prefix)) files.delete(key);
+        }
+        return Effect.void;
+      }),
+  };
+}
+
+const workspace: BotWorkspace = makeWorkspace();
 
 function makeRunRepo(): {
   readonly repo: RunRepository;
@@ -242,10 +277,25 @@ interface TestEnv {
 function makeEnv(
   participants: readonly string[],
   runtime: AgentRuntime,
-  options: { ids?: IdGenerator; clock?: Clock; botLedger?: BotRepository } = {},
+  options: {
+    ids?: IdGenerator;
+    clock?: Clock;
+    botLedger?: BotRepository;
+    workspace?: BotWorkspace;
+  } = {},
 ): TestEnv {
   const fixedClock: Clock = options.clock ?? { now: () => 1_000 };
-  const ids: IdGenerator = options.ids ?? { generate: () => "fixed-id" };
+  const ids: IdGenerator = options.ids ?? {
+    generate: (() => {
+      let n = 0;
+      return () => {
+        n += 1;
+        return n === 1 ? "fixed-id" : `fixed-id-${n}`;
+      };
+    })(),
+  };
+  const ws = options.workspace ?? workspace;
+  const ledger = options.botLedger ?? botRepo;
   const conversationService = new ConversationService({
     conversationRepo: makeConversationRepo(),
     messageRepo: makeMessageRepo(),
@@ -260,18 +310,24 @@ function makeEnv(
   const runRepo = makeRunRepo();
   const runService = new RunService({
     runRepo: runRepo.repo,
-    botRepo: options.botLedger ?? botRepo,
-    workspace,
+    botRepo: ledger,
+    workspace: ws,
     runtime,
     clock: fixedClock,
     ids,
     conversationSessions: sessions,
   });
+  const attachmentService = new AttachmentService({
+    workspace: ws,
+    conversationService,
+    botRepo: ledger,
+  });
   const coordinator = new ConversationRunCoordinator({
     conversationService,
     runService,
-    botRepo: options.botLedger ?? botRepo,
+    botRepo: ledger,
     clock: fixedClock,
+    attachmentService,
   });
   return { coordinator, conversationService, sessions, runStore: runRepo.store };
 }
@@ -421,6 +477,117 @@ describe("ConversationRunCoordinator.deleteConversation", () => {
     if (Exit.isFailure(exit)) {
       expect(Cause.squash(exit.cause)).toBeInstanceOf(NotFoundError);
     }
+  });
+
+  it("fails when attachment cleanup fails and leaves the conversation addressable", async () => {
+    const env = makeEnv(["bot-1", "human"], makeRuntime(), {
+      workspace: makeWorkspace({
+        removeConversationDir: () => Effect.fail(new WorkspaceError("disk full")),
+      }),
+    });
+    await seedConversation(env, ["bot-1", "human"]);
+    const exit = await Effect.runPromiseExit(env.coordinator.deleteConversation(conversationId));
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(WorkspaceError);
+    }
+    const stillThere = await Effect.runPromise(
+      env.conversationService.getConversation(conversationId),
+    );
+    expect(stillThere).not.toBeNull();
+  });
+});
+
+describe("attachment send consistency", () => {
+  it("rejects missing files without persisting human or marker messages", async () => {
+    const env = makeEnv(["bot-1", "human"], makeRuntime(), {
+      workspace: makeWorkspace({ files: new Map() }),
+    });
+    await seedConversation(env, ["bot-1", "human"]);
+    const exit = await Effect.runPromiseExit(
+      env.coordinator.sendMessage({
+        conversationId,
+        content: "with file",
+        attachments: [
+          {
+            savedName: "a.txt",
+            fileName: "a.txt",
+            size: 1,
+            contentType: "text/plain",
+            botId: "bot-1",
+          },
+        ],
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(NotFoundError);
+    }
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(0);
+  });
+
+  it("rejects wrong attachment botId before writing messages", async () => {
+    const files = new Map<string, { size: number; bytes: Uint8Array }>();
+    const ws = makeWorkspace({ files });
+    await Effect.runPromise(
+      ws.storeReceivedFile(asBotId("bot-1"), conversationId, "a.txt", new Uint8Array([1])),
+    );
+    const env = makeEnv(["bot-1", "human"], makeRuntime(), { workspace: ws });
+    await seedConversation(env, ["bot-1", "human"]);
+    const exit = await Effect.runPromiseExit(
+      env.coordinator.sendMessage({
+        conversationId,
+        content: "with file",
+        attachments: [
+          {
+            savedName: "a.txt",
+            fileName: "a.txt",
+            size: 1,
+            contentType: "text/plain",
+            botId: "someone-else",
+          },
+        ],
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(ValidationError);
+    }
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread).toHaveLength(0);
+  });
+
+  it("appends footnotes when the stored file exists", async () => {
+    const files = new Map<string, { size: number; bytes: Uint8Array }>();
+    const ws = makeWorkspace({ files });
+    await Effect.runPromise(
+      ws.storeReceivedFile(asBotId("bot-1"), conversationId, "a.txt", new Uint8Array([1])),
+    );
+    const env = makeEnv(["bot-1", "human"], makeRuntime(), { workspace: ws });
+    await seedConversation(env, ["bot-1", "human"]);
+    const result = await Effect.runPromise(
+      env.coordinator.sendMessage({
+        conversationId,
+        content: "with file",
+        attachments: [
+          {
+            savedName: "a.txt",
+            fileName: "a.txt",
+            size: 1,
+            contentType: "text/plain",
+            botId: "bot-1",
+          },
+        ],
+      }),
+    );
+    expect(result.run?.prompt).toContain(
+      "the user attached a file to this message and it has been saved in ./receivedFiles/fixed-id/a.txt",
+    );
+    const thread = await Effect.runPromise(env.conversationService.listMessages(conversationId));
+    expect(thread.some((m) => m.senderType === "system" && m.content.includes("attachment"))).toBe(
+      true,
+    );
   });
 });
 

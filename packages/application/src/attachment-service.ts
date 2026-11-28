@@ -165,19 +165,48 @@ export class AttachmentService {
     });
   }
 
+  assertAttachmentPresent(input: {
+    readonly conversationId: string;
+    readonly botId: string;
+    readonly savedName: string;
+    readonly expectedSize?: number;
+  }): Effect.Effect<void, NotFoundError | ValidationError | WorkspaceError> {
+    const workspace = this.workspace;
+    return Effect.gen(function* () {
+      const conversationId = String(asConversationId(input.conversationId));
+      const savedName = sanitizeAttachmentFileName(input.savedName);
+      if (savedName !== input.savedName || savedName.includes("/") || savedName.includes("\\")) {
+        return yield* Effect.fail(new ValidationError("savedName", "Unsafe savedName"));
+      }
+      const botId = asBotId(input.botId);
+      const file = yield* workspace.readReceivedFile(botId, conversationId, savedName);
+      if (!file) {
+        return yield* Effect.fail(new NotFoundError("Attachment", savedName));
+      }
+      if (input.expectedSize !== undefined && file.size !== input.expectedSize) {
+        return yield* Effect.fail(
+          new ValidationError("size", "Attachment size does not match stored file"),
+        );
+      }
+    });
+  }
+
   removeConversationFiles(
     conversationId: string,
     participantIds: readonly string[],
-  ): Effect.Effect<void> {
+  ): Effect.Effect<void, WorkspaceError | RepositoryError> {
     const workspace = this.workspace;
+    const botRepo = this.botRepo;
     return Effect.gen(function* () {
       const safeId = String(asConversationId(conversationId));
       for (const raw of participantIds) {
         const id = raw.trim();
         if (id.length === 0) continue;
-        yield* workspace
-          .removeReceivedConversationDir(asBotId(id), safeId)
-          .pipe(Effect.catchCause(() => Effect.void));
+        const bot = yield* botRepo
+          .findById(asBotId(id))
+          .pipe(Effect.catchCause(() => Effect.succeed(null)));
+        if (!bot) continue;
+        yield* workspace.removeReceivedConversationDir(bot.id, safeId);
       }
     });
   }

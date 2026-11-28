@@ -217,6 +217,10 @@ export class ConversationService {
       return yield* messageRepo.findById(asMessageId(id));
     });
   }
+
+  deleteMessage(id: string): Effect.Effect<void, RepositoryError | NotFoundError> {
+    return this.messageRepo.delete(asMessageId(id));
+  }
 }
 
 export interface ConversationSessionServiceDeps {
